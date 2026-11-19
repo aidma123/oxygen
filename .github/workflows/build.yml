@@ -2,6 +2,8 @@ name: Build oxygen browser
 
 on:
   push:
+    branches: ["**"]
+    tags: ["v*"]
   workflow_dispatch:
 
 jobs:
@@ -48,3 +50,40 @@ jobs:
         with:
           name: oxygen-ios-unsigned
           path: ios/oxygen.ipa
+
+  release:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, ios]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: Collect files
+        run: |
+          mkdir release
+          cp dist/oxygen-windows-x64/oxygen.exe release/oxygen-windows-x64.exe
+          cp dist/oxygen-ios-unsigned/oxygen.ipa release/oxygen-ios-unsigned.ipa
+          cd release && sha256sum * > SHA256SUMS.txt
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: oxygen ${{ github.ref_name }}
+          files: release/*
+          body: |
+            ## Downloads
+
+            - **Windows:** `oxygen-windows-x64.exe`. Needs the WebView2 Runtime, which comes with Windows 10 and 11. The file isn't code-signed, so SmartScreen may warn; choose **More info → Run anyway**.
+            - **iOS:** `oxygen-ios-unsigned.ipa`. Unsigned; install with [AltStore](https://altstore.io) or [Sideloadly](https://sideloadly.io) using your Apple ID. With a free Apple ID it has to be re-signed every 7 days.
+
+            ## Features
+
+            Vertical tab sidebar, workspaces, Essentials, pinned tabs, split view, compact mode, Glance link previews, built-in ad and tracker blocking, and session restore.
+
+            ## Memory
+
+            Background tabs are suspended and then unloaded. On Windows, a watchdog keeps the browser and all of its WebView2 processes under a RAM budget (800 MB by default, adjustable in Settings). On iOS, a loaded-tab limit does the same job, and background tabs are also unloaded when iOS sends a memory warning.
+
+            This is the first release. It has been compiled and tested in CI, but not yet run on real Windows or iOS hardware.
