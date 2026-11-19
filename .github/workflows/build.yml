@@ -26,10 +26,22 @@ jobs:
           workspaces: desktop
       - run: cargo test --release
       - run: cargo build --release
+      - name: Build installer
+        shell: pwsh
+        working-directory: .
+        run: |
+          $version = (Select-String -Path desktop/Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Qp "/DAppVersion=$version" installer\oxygen.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v4
         with:
           name: oxygen-windows-x64
           path: desktop/target/release/oxygen.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: oxygen-windows-setup
+          path: dist/oxygen-setup.exe
 
   ios:
     name: iOS (.ipa, unsigned)
@@ -70,7 +82,8 @@ jobs:
       - name: Collect files
         run: |
           mkdir release
-          cp dist/oxygen-windows-x64/oxygen.exe release/oxygen-windows-x64.exe
+          cp dist/oxygen-windows-setup/oxygen-setup.exe release/oxygen-setup.exe
+          cp dist/oxygen-windows-x64/oxygen.exe release/oxygen-windows-x64-portable.exe
           cp dist/oxygen-ios-unsigned/oxygen.ipa release/oxygen-ios-unsigned.ipa
           cd release && sha256sum * > SHA256SUMS.txt
       - uses: softprops/action-gh-release@v2
@@ -82,7 +95,9 @@ jobs:
           body: |
             ## Downloads
 
-            - **Windows:** `oxygen-windows-x64.exe`. Needs the WebView2 Runtime, which comes with Windows 10 and 11. The file isn't code-signed, so SmartScreen may warn; choose **More info → Run anyway**.
+            - **Windows (recommended):** `oxygen-setup.exe`. Installs oxygen for your user (no admin needed), adds it to the Start menu and to Settings → Apps for uninstalling. Your tabs and settings are kept across updates.
+            - **Windows (portable):** `oxygen-windows-x64-portable.exe`. Runs without installing.
+            - Both need the WebView2 Runtime, which comes with Windows 10 and 11. The files aren't code-signed, so SmartScreen may warn; choose **More info → Run anyway**.
             - **iOS:** `oxygen-ios-unsigned.ipa`. Unsigned; install with [AltStore](https://altstore.io) or [Sideloadly](https://sideloadly.io) using your Apple ID. With a free Apple ID it has to be re-signed every 7 days.
 
             ## Features
@@ -93,4 +108,4 @@ jobs:
 
             Background tabs are suspended and then unloaded. On Windows, a watchdog keeps the browser and all of its WebView2 processes under a RAM budget (800 MB by default, adjustable in Settings). On iOS, a loaded-tab limit does the same job, and background tabs are also unloaded when iOS sends a memory warning.
 
-            This is the first release. It has been compiled and tested in CI, but not yet run on real Windows or iOS hardware.
+            See the commit history for what changed in this version.

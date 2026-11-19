@@ -1,7 +1,15 @@
-//! Saved browser state: workspaces, tabs and settings, persisted as JSON.
+//! Saved browser state (workspaces, tabs, settings) and browsing history,
+//! persisted as JSON in the user's local app data folder.
 
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// Workspace icons the sidebar knows how to draw.
+pub const WORKSPACE_ICONS: [&str; 18] = [
+    "home", "briefcase", "code", "book", "music", "game", "cart", "flask", "globe", "heart", "camera", "folder", "chat",
+    "terminal", "leaf", "sparkle", "star", "moon",
+];
+pub const DEFAULT_ACCENT: &str = "#6f9fd8";
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Workspace {
@@ -23,7 +31,7 @@ pub struct SavedTab {
     pub essential: bool,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, PartialEq)]
 #[serde(default)]
 pub struct Settings {
     /// duckduckgo | google | bing | brave | startpage
@@ -34,9 +42,18 @@ pub struct Settings {
     pub max_loaded_tabs: usize,
     /// Background tabs are unloaded after this many minutes without being looked at.
     pub unload_after_mins: u64,
+    /// Sidebar hidden; hovering the left edge slides it over the page.
     pub compact: bool,
+    /// Sidebar collapsed to a narrow strip of icons.
+    pub collapsed: bool,
     pub block_ads: bool,
     pub sidebar_width: f64,
+    /// system | light | dark
+    pub theme: String,
+    /// Interface font id (see ui.html).
+    pub font: String,
+    /// Force websites into a dark theme. Takes effect on the next start.
+    pub force_dark: bool,
 }
 
 impl Default for Settings {
@@ -47,8 +64,12 @@ impl Default for Settings {
             max_loaded_tabs: 4,
             unload_after_mins: 10,
             compact: false,
+            collapsed: false,
             block_ads: true,
-            sidebar_width: 250.0,
+            sidebar_width: 248.0,
+            theme: "system".into(),
+            font: "system".into(),
+            force_dark: false,
         }
     }
 }
@@ -66,29 +87,67 @@ pub struct Session {
     pub next_id: u64,
 }
 
+#[derive(Serialize, Deserialize, Clone)]
+pub struct HistoryEntry {
+    pub url: String,
+    pub title: String,
+    pub visits: u32,
+    /// Seconds since the Unix epoch.
+    pub last: u64,
+}
+
 pub fn data_dir() -> PathBuf {
+    // OXYGEN_DATA_DIR runs a separate profile (handy for testing).
+    if let Some(dir) = std::env::var_os("OXYGEN_DATA_DIR") {
+        return PathBuf::from(dir);
+    }
     dirs::data_local_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join("Oxygen")
 }
 
-fn session_path() -> PathBuf {
-    data_dir().join("session.json")
+fn read_json<T: serde::de::DeserializeOwned + Default>(path: &Path) -> T {
+    std::fs::read(path)
+        .ok()
+        .and_then(|b| {
+            // Tolerate a UTF-8 byte-order mark (some editors add one).
+            let bytes = b.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&b);
+            serde_json::from_slice(bytes).ok()
+        })
+        .unwrap_or_default()
+}
+
+/// Writes then renames, so a crash mid-write never corrupts the file.
+fn write_json<T: Serialize>(name: &str, value: &T) {
+    let dir = data_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    if let Ok(json) = serde_json::to_vec(value) {
+        let tmp = dir.join(format!("{name}.tmp"));
+        if std::fs::write(&tmp, json).is_ok() {
+            let _ = std::fs::rename(tmp, dir.join(name));
+        }
+    }
 }
 
 pub fn load() -> Session {
-    let mut s: Session = std::fs::read(session_path())
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default();
+    let mut s: Session = read_json(&data_dir().join("session.json"));
     if s.workspaces.is_empty() {
         s.workspaces.push(Workspace {
             id: 1,
             name: "Home".into(),
-            icon: "🏠".into(),
-            color: "#7c6cf0".into(),
+            icon: "home".into(),
+            color: DEFAULT_ACCENT.into(),
         });
         s.active_workspace = 1;
+    }
+    for w in &mut s.workspaces {
+        // Older versions stored emoji; map them to line icons.
+        if !WORKSPACE_ICONS.contains(&w.icon.as_str()) {
+            w.icon = if w.name.eq_ignore_ascii_case("home") { "home" } else { "globe" }.into();
+        }
+        if !w.color.starts_with('#') || w.color == "#7c6cf0" {
+            w.color = DEFAULT_ACCENT.into();
+        }
     }
     if !s.workspaces.iter().any(|w| w.id == s.active_workspace) {
         s.active_workspace = s.workspaces[0].id;
@@ -99,13 +158,13 @@ pub fn load() -> Session {
 }
 
 pub fn save(s: &Session) {
-    let dir = data_dir();
-    let _ = std::fs::create_dir_all(&dir);
-    if let Ok(json) = serde_json::to_vec_pretty(s) {
-        // Write then rename so a crash mid-write never corrupts the session.
-        let tmp = dir.join("session.json.tmp");
-        if std::fs::write(&tmp, json).is_ok() {
-            let _ = std::fs::rename(tmp, session_path());
-        }
-    }
+    write_json("session.json", s);
+}
+
+pub fn load_history() -> Vec<HistoryEntry> {
+    read_json(&data_dir().join("history.json"))
+}
+
+pub fn save_history(h: &[HistoryEntry]) {
+    write_json("history.json", &h);
 }

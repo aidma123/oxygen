@@ -6,15 +6,16 @@
 
 mod blocker;
 mod memory;
+mod platform;
 mod session;
 
 use serde_json::{json, Value};
-use session::{SavedTab, Session, Settings, Workspace};
+use session::{HistoryEntry, SavedTab, Session, Settings, Workspace};
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tao::{
     dpi::LogicalSize,
-    event::{Event, WindowEvent},
+    event::{Event, StartCause, WindowEvent},
     event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy},
     window::{Fullscreen, Icon, Window, WindowBuilder},
 };
@@ -23,19 +24,19 @@ use wry::{http::Request, NewWindowResponse, Rect, WebContext, WebView, WebViewBu
 const UI_HTML: &str = include_str!("ui.html");
 const CONTENT_JS: &str = include_str!("content.js");
 const GLANCE_JS: &str = include_str!("glance.js");
-const COMPACT_STRIP: f64 = 6.0;
-const SPLIT_GAP: f64 = 4.0;
+const JETBRAINS_MONO: &[u8] = include_bytes!("../assets/fonts/JetBrainsMono-latin.woff2");
+
+/// Gap between the page card and the window edges, like Zen's element separation.
+const MARGIN: f64 = 8.0;
+/// Width of the collapsed sidebar (icons only).
+const RAIL_W: f64 = 52.0;
+const SPLIT_GAP: f64 = 8.0;
+const CORNER_RADIUS: f64 = 8.0;
+const ANIM: Duration = Duration::from_millis(200);
+const FRAME_INTERVAL: Duration = Duration::from_millis(8);
 const TICK: Duration = Duration::from_secs(3);
 const MAX_CLOSED: usize = 25;
-const PALETTE: [&str; 6] = ["#7c6cf0", "#e5484d", "#30a46c", "#f76b15", "#0090ff", "#d6409f"];
-
-/// WebView2 flags. Every webview shares one WebView2 environment (one browser
-/// process), so these must be identical for all of them. wry's defaults are
-/// kept, and renderer processes are capped so sites share processes instead of
-/// each one paying for its own.
-#[cfg(windows)]
-const BROWSER_ARGS: &str =
-    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --renderer-process-limit=4";
+const MAX_HISTORY: usize = 1500;
 
 enum Ev {
     Chrome(String),
@@ -73,10 +74,25 @@ impl Tab {
     }
 }
 
+/// Animates the sidebar width and the page's left edge together.
+struct Anim {
+    from: (f64, f64),
+    to: (f64, f64),
+    start: Instant,
+}
+
+/// Options every webview must share: they all live in one WebView2
+/// environment (one browser process), so these are fixed at startup.
+struct EnvConfig {
+    #[cfg_attr(not(windows), allow(dead_code))]
+    browser_args: String,
+}
+
 struct App {
     window: Window,
     proxy: EventLoopProxy<Ev>,
     ctx: WebContext,
+    env: EnvConfig,
     chrome: WebView,
     chrome_ready: bool,
     tabs: Vec<Tab>,
@@ -88,10 +104,17 @@ struct App {
     glance: Option<WebView>,
     closed: Vec<SavedTab>,
     settings: Settings,
+    force_dark_at_start: bool,
     next_id: u64,
     meter: memory::Meter,
     mem_mb: u64,
     dirty: bool,
+    history: Vec<HistoryEntry>,
+    history_dirty: bool,
+    /// Current (sidebar width, page left edge).
+    cur: (f64, f64),
+    anim: Option<Anim>,
+    exit: bool,
 }
 
 fn rect(x: f64, y: f64, w: f64, h: f64) -> Rect {
@@ -101,18 +124,76 @@ fn rect(x: f64, y: f64, w: f64, h: f64) -> Rect {
     }
 }
 
+fn now_secs() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+fn ease_out_cubic(t: f64) -> f64 {
+    1.0 - (1.0 - t).powi(3)
+}
+
+fn base64(bytes: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for c in bytes.chunks(3) {
+        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
+        out.push(T[(n >> 18) as usize & 63] as char);
+        out.push(T[(n >> 12) as usize & 63] as char);
+        out.push(if c.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
+        out.push(if c.len() > 2 { T[n as usize & 63] as char } else { '=' });
+    }
+    out
+}
+
+/// The sidebar page, with the bundled JetBrains Mono font inlined.
+fn ui_html() -> String {
+    let face = format!(
+        "@font-face{{font-family:'JetBrains Mono';src:url(data:font/woff2;base64,{}) format('woff2');font-weight:100 800;font-display:block}}",
+        base64(JETBRAINS_MONO)
+    );
+    UI_HTML.replace("/*OXYGEN_FONT_FACE*/", &face)
+}
+
+/// Parses `rgb(r, g, b)` / `rgba(r, g, b, a)` as produced by getComputedStyle.
+fn parse_rgb(s: &str) -> Option<(u8, u8, u8)> {
+    let inner = s.split_once('(')?.1.trim_end_matches(')');
+    let mut parts = inner.split(',').map(|p| p.trim().parse::<f64>().ok());
+    let r = parts.next()??;
+    let g = parts.next()??;
+    let b = parts.next()??;
+    Some((r.round() as u8, g.round() as u8, b.round() as u8))
+}
+
 /// Applies the options every webview must share.
-fn platform(b: WebViewBuilder<'_>) -> WebViewBuilder<'_> {
+fn platform_builder<'a>(b: WebViewBuilder<'a>, _env: &EnvConfig, _theme: &str) -> WebViewBuilder<'a> {
     #[cfg(windows)]
     {
         use wry::WebViewBuilderExtWindows;
-        b.with_additional_browser_args(BROWSER_ARGS)
+        b.with_additional_browser_args(&_env.browser_args)
             .with_browser_extensions_enabled(true)
             .with_extensions_path(session::data_dir().join("extensions"))
+            .with_theme(wry_theme(_theme))
     }
     #[cfg(not(windows))]
     {
         b
+    }
+}
+
+#[cfg(windows)]
+fn wry_theme(theme: &str) -> wry::Theme {
+    match theme {
+        "dark" => wry::Theme::Dark,
+        "light" => wry::Theme::Light,
+        _ => wry::Theme::Auto,
+    }
+}
+
+fn apply_theme(_view: &WebView, _theme: &str) {
+    #[cfg(windows)]
+    {
+        use wry::WebViewExtWindows;
+        let _ = _view.set_theme(wry_theme(_theme));
     }
 }
 
@@ -126,9 +207,12 @@ fn set_memory_level(_view: &WebView, _low: bool) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_content(
     window: &Window,
     ctx: &mut WebContext,
+    env: &EnvConfig,
+    theme: &str,
     proxy: &EventLoopProxy<Ev>,
     block_ads: bool,
     id: u64,
@@ -153,7 +237,7 @@ fn build_content(
             let _ = p4.send_event(Ev::NewTab(u));
             NewWindowResponse::Deny
         });
-    let view = match platform(builder).build_as_child(window) {
+    let view = match platform_builder(builder, env, theme).build_as_child(window) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("failed to create tab webview: {e}");
@@ -219,14 +303,20 @@ impl App {
         let data = session::data_dir();
         let _ = std::fs::create_dir_all(data.join("extensions"));
         let mut ctx = WebContext::new(Some(data.join("webview")));
+        let mut browser_args =
+            String::from("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --renderer-process-limit=4");
+        if s.settings.force_dark {
+            browser_args.push_str(" --enable-features=WebContentsForceDark");
+        }
+        let env = EnvConfig { browser_args };
         let p = proxy.clone();
         let builder = WebViewBuilder::new_with_web_context(&mut ctx)
-            .with_html(UI_HTML)
-            .with_bounds(rect(0.0, 0.0, s.settings.sidebar_width, 800.0))
+            .with_html(ui_html())
+            .with_bounds(rect(0.0, 0.0, 0.0, 0.0))
             .with_ipc_handler(move |r: Request<String>| {
                 let _ = p.send_event(Ev::Chrome(r.into_body()));
             });
-        let chrome = platform(builder)
+        let chrome = platform_builder(builder, &env, &s.settings.theme)
             .build_as_child(&window)
             .expect("could not start the webview (on Windows, install the WebView2 Runtime)");
         let now = Instant::now();
@@ -245,10 +335,12 @@ impl App {
                 last_active: now,
             })
             .collect();
+        let force_dark_at_start = s.settings.force_dark;
         let mut app = App {
             window,
             proxy,
             ctx,
+            env,
             chrome,
             chrome_ready: false,
             tabs,
@@ -260,11 +352,18 @@ impl App {
             glance: None,
             closed: Vec::new(),
             settings: s.settings,
+            force_dark_at_start,
             next_id: s.next_id,
             meter: memory::Meter::new(),
             mem_mb: 0,
             dirty: false,
+            history: session::load_history(),
+            history_dirty: false,
+            cur: (0.0, 0.0),
+            anim: None,
+            exit: false,
         };
+        app.cur = app.targets();
         // Only the visible tab is loaded at startup; the rest restore lazily.
         app.layout();
         app.update_title();
@@ -300,58 +399,126 @@ impl App {
         vec![a]
     }
 
-    fn sidebar_width(&self) -> f64 {
-        if self.settings.compact && !self.peek {
-            COMPACT_STRIP
+    fn mode(&self) -> &'static str {
+        if self.peek {
+            "peek"
+        } else if self.settings.compact {
+            "hidden"
+        } else if self.settings.collapsed {
+            "rail"
         } else {
-            self.settings.sidebar_width
+            "expanded"
         }
     }
 
-    /// (x, y, width, height) of the page area right of the sidebar.
-    fn content_area(&self) -> (f64, f64, f64, f64) {
-        let size = self.window.inner_size().to_logical::<f64>(self.window.scale_factor());
-        let sw = self.sidebar_width();
-        (sw, 0.0, (size.width - sw).max(0.0), size.height)
+    /// Target (sidebar width, page left edge) for the current mode.
+    fn targets(&self) -> (f64, f64) {
+        let sw = self.settings.sidebar_width;
+        let resting = if self.settings.compact {
+            MARGIN
+        } else if self.settings.collapsed {
+            RAIL_W
+        } else {
+            sw
+        };
+        if self.peek {
+            // The floating sidebar overlaps the page where the platform allows it.
+            (sw, if platform::CAN_OVERLAY { resting } else { sw })
+        } else if self.settings.compact {
+            (0.0, MARGIN)
+        } else {
+            (resting, resting)
+        }
     }
 
-    fn glance_rect(&self) -> Rect {
+    /// Moves the sidebar and page to the current mode, animated or not.
+    fn retarget(&mut self, animate: bool) {
+        let to = self.targets();
+        if self.peek {
+            platform::raise(&self.chrome);
+        }
+        if animate && to != self.cur {
+            self.anim = Some(Anim { from: self.cur, to, start: Instant::now() });
+        } else {
+            self.anim = None;
+            self.cur = to;
+        }
+        self.layout();
+    }
+
+    /// Advances the sidebar animation. Returns true while it is still running.
+    fn step_anim(&mut self) -> bool {
+        let Some(a) = &self.anim else { return false };
+        let t = (a.start.elapsed().as_secs_f64() / ANIM.as_secs_f64()).min(1.0);
+        let e = ease_out_cubic(t);
+        self.cur = (a.from.0 + (a.to.0 - a.from.0) * e, a.from.1 + (a.to.1 - a.from.1) * e);
+        if t >= 1.0 {
+            self.cur = a.to;
+            self.anim = None;
+        }
+        self.layout();
+        self.anim.is_some()
+    }
+
+    fn window_size(&self) -> (f64, f64) {
+        let size = self.window.inner_size().to_logical::<f64>(self.window.scale_factor());
+        (size.width, size.height)
+    }
+
+    /// (x, y, width, height) of the page card.
+    fn content_area(&self) -> (f64, f64, f64, f64) {
+        let (w, h) = self.window_size();
+        let x = self.cur.1;
+        (x, MARGIN, (w - x - MARGIN).max(0.0), (h - 2.0 * MARGIN).max(0.0))
+    }
+
+    fn glance_rect(&self) -> (f64, f64, f64, f64) {
         let (x, y, w, h) = self.content_area();
-        rect(x + w * 0.06, y + h * 0.05, w * 0.88, h * 0.9)
+        (x + w * 0.06, y + h * 0.05, w * 0.88, h * 0.9)
     }
 
     /// Positions every webview, loading visible tabs and hiding the rest.
     fn layout(&mut self) {
-        let size = self.window.inner_size().to_logical::<f64>(self.window.scale_factor());
-        let _ = self.chrome.set_bounds(rect(0.0, 0.0, self.sidebar_width(), size.height));
+        let (_, wh) = self.window_size();
+        let scale = self.window.scale_factor();
+        let chrome_w = self.cur.0;
+        let _ = self.chrome.set_bounds(rect(0.0, 0.0, chrome_w.max(1.0), wh));
+        let _ = self.chrome.set_visible(chrome_w >= 1.0);
         let (x, y, w, h) = self.content_area();
         let vis = self.visible_ids();
-        let slots = if vis.len() == 2 {
+        let slots: Vec<(f64, f64, f64, f64)> = if vis.len() == 2 {
             let half = (w - SPLIT_GAP) / 2.0;
-            vec![rect(x, y, half, h), rect(x + half + SPLIT_GAP, y, half, h)]
+            vec![(x, y, half, h), (x + half + SPLIT_GAP, y, half, h)]
         } else {
-            vec![rect(x, y, w, h)]
+            vec![(x, y, w, h)]
         };
         let now = Instant::now();
-        for (id, slot) in vis.iter().zip(slots) {
+        for (id, (sx, sy, sw, sh)) in vis.iter().zip(slots) {
             let Some(i) = self.idx(*id) else { continue };
             if self.tabs[i].view.is_none() {
                 let url = self.tabs[i].url.clone();
                 self.tabs[i].view = build_content(
                     &self.window,
                     &mut self.ctx,
+                    &self.env,
+                    &self.settings.theme,
                     &self.proxy,
                     self.settings.block_ads,
                     *id,
                     &url,
-                    slot.clone(),
+                    rect(sx, sy, sw, sh),
                 );
                 self.tabs[i].shown = false;
+                // A new page would cover the floating sidebar.
+                if self.peek {
+                    platform::raise(&self.chrome);
+                }
             }
             let t = &mut self.tabs[i];
             t.last_active = now;
             if let Some(v) = &t.view {
-                let _ = v.set_bounds(slot);
+                let _ = v.set_bounds(rect(sx, sy, sw, sh));
+                platform::round_corners(v, sw, sh, scale, CORNER_RADIUS);
                 if !t.shown {
                     let _ = v.set_visible(true);
                     set_memory_level(v, false);
@@ -368,7 +535,9 @@ impl App {
             t.last_active = now; // the idle timer starts when the tab is hidden
         }
         if let Some(g) = &self.glance {
-            let _ = g.set_bounds(self.glance_rect());
+            let (gx, gy, gw, gh) = self.glance_rect();
+            let _ = g.set_bounds(rect(gx, gy, gw, gh));
+            platform::round_corners(g, gw, gh, scale, 12.0);
         }
     }
 
@@ -418,12 +587,10 @@ impl App {
             return;
         }
         let active = self.active();
-        let split = self.split;
         let tj = |t: &Tab| {
             json!({
                 "id": t.id, "url": t.url, "title": t.title, "loaded": t.view.is_some(),
                 "active": Some(t.id) == active, "essential": t.essential, "pinned": t.pinned,
-                "inSplit": split.is_some_and(|(a, b)| a == t.id || b == t.id),
             })
         };
         let ws = self.active_ws;
@@ -447,8 +614,9 @@ impl App {
         let state = json!({
             "workspaces": self.workspaces, "activeWs": ws, "essentials": essentials,
             "pinned": pinned, "tabs": tabs, "activeId": active, "activeUrl": active_url,
-            "split": split.filter(|_| self.visible_ids().len() == 2), "compact": self.settings.compact,
-            "peek": self.peek, "settings": self.settings, "mem": self.mem_mb,
+            "split": self.split.map(|(a, b)| [a, b]), "mode": self.mode(),
+            "settings": self.settings, "mem": self.mem_mb,
+            "restartNeeded": self.settings.force_dark != self.force_dark_at_start,
         });
         let _ = self.chrome.evaluate_script(&format!("window.zl&&zl.render({state})"));
     }
@@ -465,7 +633,7 @@ impl App {
         });
     }
 
-    fn save(&self) {
+    fn save(&mut self) {
         session::save(&Session {
             workspaces: self.workspaces.clone(),
             tabs: self.tabs.iter().map(Tab::saved).collect(),
@@ -475,6 +643,53 @@ impl App {
             settings: self.settings.clone(),
             next_id: self.next_id,
         });
+        if self.history_dirty {
+            session::save_history(&self.history);
+            self.history_dirty = false;
+        }
+    }
+
+    fn record_visit(&mut self, url: &str, title: &str) {
+        if !(url.starts_with("http://") || url.starts_with("https://")) {
+            return;
+        }
+        let now = now_secs();
+        match self.history.iter_mut().find(|h| h.url == url) {
+            Some(h) => {
+                h.visits += 1;
+                h.last = now;
+                if !title.is_empty() {
+                    h.title = title.to_string();
+                }
+            }
+            None => self.history.push(HistoryEntry { url: url.into(), title: title.into(), visits: 1, last: now }),
+        }
+        if self.history.len() > MAX_HISTORY {
+            self.sort_history();
+            self.history.truncate(MAX_HISTORY * 2 / 3);
+        }
+        self.history_dirty = true;
+    }
+
+    /// Most useful first: visited often and recently.
+    fn sort_history(&mut self) {
+        let now = now_secs();
+        let score = |h: &HistoryEntry| {
+            let days = now.saturating_sub(h.last) as f64 / 86_400.0;
+            (h.visits as f64).sqrt() / (1.0 + days * 0.25)
+        };
+        self.history.sort_by(|a, b| score(b).partial_cmp(&score(a)).unwrap_or(std::cmp::Ordering::Equal));
+    }
+
+    fn send_history(&mut self) {
+        self.sort_history();
+        let list: Vec<Value> = self
+            .history
+            .iter()
+            .take(300)
+            .map(|h| json!({ "url": h.url, "title": h.title }))
+            .collect();
+        let _ = self.chrome.evaluate_script(&format!("window.zl&&zl.history({})", Value::Array(list)));
     }
 
     fn active_view(&self) -> Option<&WebView> {
@@ -510,10 +725,12 @@ impl App {
         self.active_ws = ws;
         self.active_tab.insert(ws, id);
         self.glance = None;
-        if self.settings.compact {
+        if self.peek {
             self.peek = false;
+            self.retarget(true);
+        } else {
+            self.layout();
         }
-        self.layout();
         self.enforce_limits();
         self.render();
         if let Some(v) = self.active_view() {
@@ -553,6 +770,36 @@ impl App {
         }
         self.layout();
         self.enforce_limits();
+        self.render();
+    }
+
+    /// Closes every unpinned tab in the current workspace.
+    fn clear_tabs(&mut self) {
+        let ws = self.active_ws;
+        let ids: Vec<u64> = self
+            .tabs
+            .iter()
+            .filter(|t| !t.essential && !t.pinned && t.workspace == ws)
+            .map(|t| t.id)
+            .collect();
+        for id in &ids {
+            if let Some(i) = self.idx(*id) {
+                let tab = self.tabs.remove(i);
+                self.closed.push(tab.saved());
+            }
+        }
+        let excess = self.closed.len().saturating_sub(MAX_CLOSED);
+        self.closed.drain(..excess);
+        if self.active().is_none() {
+            match self.ws_tab_ids(ws).first().copied() {
+                Some(first) => self.active_tab.insert(ws, first),
+                None => self.active_tab.remove(&ws),
+            };
+        }
+        if self.split.is_some_and(|(a, b)| self.idx(a).is_none() || self.idx(b).is_none()) {
+            self.split = None;
+        }
+        self.layout();
         self.render();
     }
 
@@ -600,18 +847,26 @@ impl App {
         self.select(list[next]);
     }
 
-    fn set_compact(&mut self, on: bool) {
-        self.settings.compact = on;
+    fn set_peek(&mut self, on: bool) {
+        if self.peek != on {
+            self.peek = on;
+            self.retarget(true);
+            self.render();
+        }
+    }
+
+    fn set_layout_mode(&mut self, compact: bool, collapsed: bool) {
+        self.settings.compact = compact;
+        self.settings.collapsed = collapsed;
         self.peek = false;
-        self.layout();
+        self.retarget(true);
         self.render();
     }
 
     fn focus_address(&mut self, new_tab: bool) {
-        if self.settings.compact && !self.peek {
-            self.peek = true;
-            self.layout();
-            self.render();
+        // With the sidebar hidden or collapsed, slide it out to show the address bar.
+        if self.settings.compact || self.settings.collapsed {
+            self.set_peek(true);
         }
         let _ = self.chrome.focus();
         let _ = self.chrome.evaluate_script(&format!("window.zl&&zl.focusUrl({new_tab})"));
@@ -641,9 +896,9 @@ impl App {
             return;
         }
         let (p1, p2) = (self.proxy.clone(), self.proxy.clone());
-        let bounds = self.glance_rect();
+        let (gx, gy, gw, gh) = self.glance_rect();
         let builder = WebViewBuilder::new_with_web_context(&mut self.ctx)
-            .with_bounds(bounds)
+            .with_bounds(rect(gx, gy, gw, gh))
             .with_initialization_script_for_main_only(GLANCE_JS, true)
             .with_ipc_handler(move |r: Request<String>| {
                 let _ = p1.send_event(Ev::Glance(r.into_body()));
@@ -652,10 +907,11 @@ impl App {
                 let _ = p2.send_event(Ev::NewTab(u));
                 NewWindowResponse::Deny
             });
-        if let Ok(v) = platform(builder).build_as_child(&self.window) {
+        if let Ok(v) = platform_builder(builder, &self.env, &self.settings.theme).build_as_child(&self.window) {
             if self.settings.block_ads {
                 blocker::install(&v);
             }
+            platform::round_corners(&v, gw, gh, self.window.scale_factor(), 12.0);
             let _ = v.load_url(&url);
             let _ = v.focus();
             self.glance = Some(v);
@@ -666,6 +922,15 @@ impl App {
         if self.glance.take().is_some() {
             if let Some(v) = self.active_view() {
                 let _ = v.focus();
+            }
+        }
+    }
+
+    fn restart(&mut self) {
+        self.save();
+        if let Ok(exe) = std::env::current_exe() {
+            if std::process::Command::new(exe).arg("--restarted").spawn().is_ok() {
+                self.exit = true;
             }
         }
     }
@@ -684,7 +949,8 @@ impl App {
             "ctrl+shift+t" => self.reopen_closed(),
             "ctrl+tab" => self.cycle_tab(1),
             "ctrl+shift+tab" => self.cycle_tab(-1),
-            "ctrl+alt+c" => self.set_compact(!self.settings.compact),
+            "ctrl+alt+s" => self.set_layout_mode(false, !(self.settings.collapsed && !self.settings.compact)),
+            "ctrl+alt+c" => self.set_layout_mode(!self.settings.compact, self.settings.collapsed),
             "ctrl+alt+v" => self.toggle_split(),
             "ctrl+alt+arrowleft" => self.cycle_ws(-1),
             "ctrl+alt+arrowright" => self.cycle_ws(1),
@@ -699,11 +965,7 @@ impl App {
             }
             "escape" => {
                 self.close_glance();
-                if self.peek {
-                    self.peek = false;
-                    self.layout();
-                    self.render();
-                }
+                self.set_peek(false);
             }
             "ctrl+r" | "f5" => {
                 if let Some(v) = self.active_view() {
@@ -744,6 +1006,23 @@ impl App {
         }
     }
 
+    fn apply_settings(&mut self, new: Settings) {
+        let old = std::mem::replace(&mut self.settings, new);
+        if old.theme != self.settings.theme {
+            let theme = self.settings.theme.clone();
+            for v in self.tabs.iter().filter_map(|t| t.view.as_ref()).chain(self.glance.as_ref()) {
+                apply_theme(v, &theme);
+            }
+            apply_theme(&self.chrome, &theme);
+        }
+        if old.compact != self.settings.compact || old.collapsed != self.settings.collapsed {
+            self.peek = false;
+            self.retarget(true);
+        }
+        self.enforce_limits();
+        self.render();
+    }
+
     fn handle_chrome(&mut self, msg: &str) {
         let Ok(v) = serde_json::from_str::<Value>(msg) else { return };
         let id = v["id"].as_u64().unwrap_or(0);
@@ -751,15 +1030,20 @@ impl App {
             "ready" => {
                 self.chrome_ready = true;
                 self.render();
-                if self.tabs.is_empty() {
+                if self.tabs.is_empty() && !self.settings.compact && !self.settings.collapsed {
                     self.focus_address(true);
                 }
             }
+            "frame" => {
+                if let Some((r, g, b)) = v["color"].as_str().and_then(parse_rgb) {
+                    self.window.set_background_color(Some((r, g, b, 255)));
+                    platform::style_title_bar(&self.window, (r, g, b), v["dark"].as_bool().unwrap_or(false));
+                }
+            }
+            "history" => self.send_history(),
             "go" => {
                 let url = normalize_input(v["input"].as_str().unwrap_or(""), &self.settings.search_engine);
-                if self.settings.compact {
-                    self.peek = false;
-                }
+                self.set_peek(false);
                 let active = self.active();
                 match active.filter(|_| !v["newTab"].as_bool().unwrap_or(false)) {
                     Some(a) => {
@@ -780,9 +1064,17 @@ impl App {
             }
             "select" => self.select(id),
             "close" => self.close(id),
+            "clear" => self.clear_tabs(),
             "back" => self.on_key("alt+arrowleft"),
             "forward" => self.on_key("alt+arrowright"),
             "reload" => self.on_key("ctrl+r"),
+            "collapse" => {
+                if self.settings.compact {
+                    self.set_layout_mode(false, true);
+                } else {
+                    self.set_layout_mode(false, !self.settings.collapsed);
+                }
+            }
             "reloadTab" => {
                 if let Some(view) = self.idx(id).and_then(|i| self.tabs[i].view.as_ref()) {
                     let _ = view.reload();
@@ -808,23 +1100,15 @@ impl App {
                 self.layout();
                 self.render();
             }
-            "compact" => self.set_compact(!self.settings.compact),
-            "peek" => {
-                let on = v["on"].as_bool().unwrap_or(false);
-                if self.settings.compact && self.peek != on {
-                    self.peek = on;
-                    self.layout();
-                    self.render();
-                }
-            }
+            "peek" => self.set_peek(v["on"].as_bool().unwrap_or(false)),
             "ws" => self.switch_ws(v["id"].as_u64().unwrap_or(0) as u32),
             "newWs" => {
                 let new_id = self.workspaces.iter().map(|w| w.id).max().unwrap_or(0) + 1;
                 self.workspaces.push(Workspace {
                     id: new_id,
                     name: v["name"].as_str().unwrap_or("Workspace").to_string(),
-                    icon: v["icon"].as_str().unwrap_or("✨").to_string(),
-                    color: PALETTE[new_id as usize % PALETTE.len()].to_string(),
+                    icon: v["icon"].as_str().unwrap_or("globe").to_string(),
+                    color: v["color"].as_str().unwrap_or(session::DEFAULT_ACCENT).to_string(),
                 });
                 self.switch_ws(new_id);
             }
@@ -833,6 +1117,7 @@ impl App {
                 if let Some(w) = self.workspaces.iter_mut().find(|w| w.id == ws_id) {
                     w.name = v["name"].as_str().unwrap_or(&w.name).to_string();
                     w.icon = v["icon"].as_str().unwrap_or(&w.icon).to_string();
+                    w.color = v["color"].as_str().unwrap_or(&w.color).to_string();
                 }
                 self.render();
             }
@@ -913,19 +1198,27 @@ impl App {
             }
             "settings" => {
                 if let Ok(new) = serde_json::from_value::<Settings>(v["settings"].clone()) {
-                    self.settings = new;
-                    self.peek = false;
-                    self.layout();
-                    self.enforce_limits();
-                    self.render();
+                    self.apply_settings(new);
                 }
             }
+            "restart" => self.restart(),
             "key" => {
                 let k = v["k"].as_str().unwrap_or("").to_string();
                 self.on_key(&k);
             }
             _ => {}
         }
+    }
+
+    fn set_tab_url(&mut self, id: u64, url: &str) {
+        let Some(i) = self.idx(id) else { return };
+        if self.tabs[i].url == url || url.starts_with("about:blank") {
+            return;
+        }
+        self.tabs[i].url = url.to_string();
+        let title = self.tabs[i].title.clone();
+        self.record_visit(url, &title);
+        self.render();
     }
 
     fn handle(&mut self, ev: Ev) {
@@ -944,11 +1237,8 @@ impl App {
                         }
                     }
                     "url" => {
-                        if let (Some(i), Some(u)) = (self.idx(id), v["url"].as_str()) {
-                            if self.tabs[i].url != u {
-                                self.tabs[i].url = u.to_string();
-                                self.render();
-                            }
+                        if let Some(u) = v["url"].as_str() {
+                            self.set_tab_url(id, u);
                         }
                     }
                     _ => {}
@@ -970,19 +1260,17 @@ impl App {
             Ev::Title(id, title) => {
                 if let Some(i) = self.idx(id) {
                     if !title.trim().is_empty() && self.tabs[i].title != title {
-                        self.tabs[i].title = title;
+                        self.tabs[i].title = title.clone();
+                        let url = self.tabs[i].url.clone();
+                        if let Some(h) = self.history.iter_mut().find(|h| h.url == url) {
+                            h.title = title;
+                            self.history_dirty = true;
+                        }
                         self.render();
                     }
                 }
             }
-            Ev::Url(id, url) => {
-                if let Some(i) = self.idx(id) {
-                    if self.tabs[i].url != url && !url.starts_with("about:blank") {
-                        self.tabs[i].url = url;
-                        self.render();
-                    }
-                }
-            }
+            Ev::Url(id, url) => self.set_tab_url(id, &url),
             Ev::NewTab(url) => {
                 self.open_tab(url, false);
             }
@@ -993,7 +1281,7 @@ impl App {
                     "window.zl&&zl.mem({},{})",
                     self.mem_mb, self.settings.memory_budget_mb
                 ));
-                if self.dirty {
+                if self.dirty || self.history_dirty {
                     self.save();
                     self.dirty = false;
                 }
@@ -1007,16 +1295,24 @@ fn main() {
     #[cfg(target_os = "linux")]
     std::env::set_var("GDK_BACKEND", "x11");
 
+    let restarted = std::env::args().any(|a| a == "--restarted");
+    if !platform::claim_single_instance(restarted) {
+        return;
+    }
+
+    let session = session::load();
     let event_loop = EventLoopBuilder::<Ev>::with_user_event().build();
     let proxy = event_loop.create_proxy();
     let window = WindowBuilder::new()
         .with_title("oxygen")
         .with_inner_size(LogicalSize::new(1280.0, 800.0))
-        .with_min_inner_size(LogicalSize::new(520.0, 360.0))
+        .with_min_inner_size(LogicalSize::new(560.0, 380.0))
+        .with_background_color((0xe9, 0xf0, 0xf8, 255))
         .with_window_icon(Icon::from_rgba(include_bytes!("../assets/icon64.rgba").to_vec(), 64, 64).ok())
         .build(&event_loop)
         .expect("could not create the window");
-    let mut app = App::new(window, proxy.clone(), session::load());
+    platform::record_window(&window);
+    let mut app = App::new(window, proxy.clone(), session);
 
     std::thread::spawn(move || loop {
         std::thread::sleep(TICK);
@@ -1026,19 +1322,35 @@ fn main() {
     });
 
     event_loop.run(move |event, _, control_flow| {
-        *control_flow = ControlFlow::Wait;
         match event {
+            Event::NewEvents(StartCause::ResumeTimeReached { .. }) => {
+                app.step_anim();
+            }
             Event::WindowEvent { event, .. } => match event {
                 WindowEvent::CloseRequested => {
                     app.save();
-                    *control_flow = ControlFlow::Exit;
+                    app.exit = true;
                 }
                 WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => app.layout(),
+                WindowEvent::CursorMoved { position, .. } => {
+                    // Compact mode: touching the left edge slides the sidebar out.
+                    let x = position.x / app.window.scale_factor();
+                    if app.settings.compact && !app.peek && x <= MARGIN + 1.0 {
+                        app.set_peek(true);
+                    }
+                }
                 _ => {}
             },
             Event::UserEvent(ev) => app.handle(ev),
             _ => {}
         }
+        *control_flow = if app.exit {
+            ControlFlow::Exit
+        } else if app.anim.is_some() {
+            ControlFlow::WaitUntil(Instant::now() + FRAME_INTERVAL)
+        } else {
+            ControlFlow::Wait
+        };
     });
 }
 
@@ -1059,5 +1371,21 @@ mod tests {
     #[test]
     fn titles_from_urls() {
         assert_eq!(title_from_url("https://www.example.com/path"), "example.com");
+    }
+
+    #[test]
+    fn base64_matches_reference() {
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foo"), "Zm9v");
+        assert_eq!(base64(b"oxygen!"), "b3h5Z2VuIQ==");
+    }
+
+    #[test]
+    fn parses_computed_colors() {
+        assert_eq!(parse_rgb("rgb(233, 240, 248)"), Some((233, 240, 248)));
+        assert_eq!(parse_rgb("rgba(1, 2, 3, 0.5)"), Some((1, 2, 3)));
+        assert_eq!(parse_rgb("color(srgb 0.9 0.9 0.9)"), None);
     }
 }

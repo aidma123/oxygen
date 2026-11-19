@@ -8,7 +8,7 @@
   const KEYS = new Set([
     'ctrl+t', 'ctrl+l', 'ctrl+w', 'ctrl+shift+t', 'ctrl+tab', 'ctrl+shift+tab',
     'ctrl+alt+c', 'ctrl+alt+v', 'ctrl+alt+arrowleft', 'ctrl+alt+arrowright',
-    'ctrl+shift+e', 'f11',
+    'ctrl+shift+e', 'ctrl+alt+s', 'f11',
   ]);
   addEventListener('keydown', (e) => {
     const k = e.key.toLowerCase();
