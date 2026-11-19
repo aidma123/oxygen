@@ -19,6 +19,8 @@ targets:
       path: Oxygen/Info.plist
       properties:
         CFBundleDisplayName: oxygen
+        UIAppFonts:
+          - JetBrainsMono.ttf
         UILaunchScreen: {}
         ITSAppUsesNonExemptEncryption: false
         UIApplicationSceneManifest:

@@ -55,6 +55,7 @@ enum SearchEngine: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+/// Same options, names and defaults as the Windows version where they apply.
 struct BrowserSettings: Codable, Equatable {
     var searchEngine: SearchEngine = .duckduckgo
     /// Tabs kept loaded at once, including the ones on screen.
@@ -62,15 +63,102 @@ struct BrowserSettings: Codable, Equatable {
     /// Background tabs are unloaded after this many minutes.
     var unloadAfterMinutes = 10
     var blockAds = true
-    /// "light", "dark" or nil for the system setting. Optional so sessions
-    /// saved by older versions still load.
-    var theme: String?
+    /// "system", "light" or "dark".
+    var theme = "system"
+    /// Interface font id (see `AppFont`).
+    var font = "system"
+    /// Darken websites that have no dark theme of their own.
+    var forceDark = false
+    /// iPad: sidebar collapsed to a strip of favicons.
+    var collapsed = false
+
+    init() {}
+
+    // Missing keys fall back to defaults, so sessions from older versions load.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = BrowserSettings()
+        searchEngine = (try? c.decodeIfPresent(SearchEngine.self, forKey: .searchEngine)) ?? d.searchEngine
+        maxLoadedTabs = (try? c.decodeIfPresent(Int.self, forKey: .maxLoadedTabs)) ?? d.maxLoadedTabs
+        unloadAfterMinutes = (try? c.decodeIfPresent(Int.self, forKey: .unloadAfterMinutes)) ?? d.unloadAfterMinutes
+        blockAds = (try? c.decodeIfPresent(Bool.self, forKey: .blockAds)) ?? d.blockAds
+        theme = (try? c.decodeIfPresent(String.self, forKey: .theme)) ?? d.theme
+        font = (try? c.decodeIfPresent(String.self, forKey: .font)) ?? d.font
+        forceDark = (try? c.decodeIfPresent(Bool.self, forKey: .forceDark)) ?? d.forceDark
+        collapsed = (try? c.decodeIfPresent(Bool.self, forKey: .collapsed)) ?? d.collapsed
+    }
 
     var colorScheme: ColorScheme? {
         switch theme {
         case "light": return .light
         case "dark": return .dark
         default: return nil
+        }
+    }
+}
+
+struct HistoryEntry: Codable, Equatable {
+    var url: URL
+    var title: String
+    var visits: Int
+    var last: Date
+}
+
+/// Interface fonts. Ids match the Windows version where the font exists on iOS.
+enum AppFont {
+    struct Choice: Identifiable {
+        let id: String
+        let name: String
+    }
+
+    static let choices: [Choice] = [
+        Choice(id: "system", name: "San Francisco"),
+        Choice(id: "jetbrains", name: "JetBrains Mono"),
+        Choice(id: "rounded", name: "SF Rounded"),
+        Choice(id: "mono", name: "SF Mono"),
+        Choice(id: "serif", name: "New York"),
+        Choice(id: "georgia", name: "Georgia"),
+        Choice(id: "verdana", name: "Verdana"),
+    ]
+
+    /// The selected font id; the store updates it when settings change.
+    static var current = "system"
+
+    static func font(_ style: Font.TextStyle, weight: Font.Weight = .regular, id: String = current) -> Font {
+        let size = UIFont.preferredFont(forTextStyle: style.uiKit).pointSize
+        switch id {
+        case "jetbrains": return .custom("JetBrains Mono", size: size * 0.94, relativeTo: style).weight(weight)
+        case "georgia": return .custom("Georgia", size: size, relativeTo: style).weight(weight)
+        case "verdana": return .custom("Verdana", size: size * 0.92, relativeTo: style).weight(weight)
+        case "rounded": return .system(style, design: .rounded).weight(weight)
+        case "mono": return .system(style, design: .monospaced).weight(weight)
+        case "serif": return .system(style, design: .serif).weight(weight)
+        default: return .system(style).weight(weight)
+        }
+    }
+}
+
+extension Font {
+    /// A text style in the user's chosen interface font.
+    static func app(_ style: Font.TextStyle, weight: Font.Weight = .regular) -> Font {
+        AppFont.font(style, weight: weight)
+    }
+}
+
+extension Font.TextStyle {
+    var uiKit: UIFont.TextStyle {
+        switch self {
+        case .largeTitle: return .largeTitle
+        case .title: return .title1
+        case .title2: return .title2
+        case .title3: return .title3
+        case .headline: return .headline
+        case .subheadline: return .subheadline
+        case .callout: return .callout
+        case .footnote: return .footnote
+        case .caption: return .caption1
+        case .caption2: return .caption2
+        default: return .body
         }
     }
 }
@@ -95,15 +183,29 @@ enum WorkspaceStyle {
 }
 
 extension Color {
-    /// The soft blue frame behind the sidebar, tinted by the workspace colour.
+    /// The soft blue frame behind the sidebar and page card, tinted by the
+    /// workspace colour. Same colours as the Windows version.
     static func oxygenFrame(accent: Color) -> some View {
         ZStack {
             Color(UIColor { $0.userInterfaceStyle == .dark
-                ? UIColor(red: 0.08, green: 0.106, blue: 0.141, alpha: 1)
+                ? UIColor(red: 0.082, green: 0.106, blue: 0.141, alpha: 1)
                 : UIColor(red: 0.914, green: 0.941, blue: 0.973, alpha: 1) })
-            accent.opacity(0.08)
+            accent.opacity(0.09)
         }
     }
+
+    /// Background of the selected tab row / Essentials tile.
+    static let oxygenSelected = Color(UIColor { $0.userInterfaceStyle == .dark
+        ? UIColor(red: 0.78, green: 0.86, blue: 1, alpha: 0.1)
+        : UIColor.white })
+    /// Hover/idle tile background.
+    static let oxygenTile = Color(UIColor { $0.userInterfaceStyle == .dark
+        ? UIColor(red: 0.78, green: 0.86, blue: 1, alpha: 0.06)
+        : UIColor(red: 0.16, green: 0.31, blue: 0.51, alpha: 0.065) })
+    /// Address field background.
+    static let oxygenField = Color(UIColor { $0.userInterfaceStyle == .dark
+        ? UIColor(red: 0.78, green: 0.86, blue: 1, alpha: 0.07)
+        : UIColor(white: 1, alpha: 0.65) })
 }
 
 struct SessionData: Codable {
@@ -127,22 +229,52 @@ struct AddressRequest: Equatable {
     let newTab: Bool
 }
 
+/// One row in the address bar suggestions.
+struct Suggestion: Identifiable, Hashable {
+    enum Kind: Hashable {
+        case go, search, tab(UUID), history
+    }
+    let id = UUID()
+    let kind: Kind
+    let title: String
+    let url: URL?
+    let input: String
+
+    var symbol: String {
+        switch kind {
+        case .go: return "globe"
+        case .search: return "magnifyingglass"
+        case .tab: return "square.on.square"
+        case .history: return "clock"
+        }
+    }
+}
+
 enum AddressParser {
+    private static let schemes = ["http://", "https://", "about:", "file://", "data:"]
+
+    /// Whether input is an address rather than a search.
+    static func isAddress(_ input: String) -> Bool {
+        let s = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = s.lowercased()
+        if schemes.contains(where: { lower.hasPrefix($0) }) { return true }
+        let local = lower.hasPrefix("localhost") || lower.hasPrefix("127.0.0.1")
+        return !s.isEmpty && !s.contains(where: { $0.isWhitespace })
+            && (s.contains(".") || local)
+            && !s.hasPrefix(".") && !s.hasSuffix(".")
+    }
+
     /// Turns address-bar input into a URL: the address itself or a search.
     static func url(from input: String, engine: SearchEngine) -> URL? {
         let s = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !s.isEmpty else { return nil }
         let lower = s.lowercased()
-        let schemes = ["http://", "https://", "about:", "file://", "data:"]
         if schemes.contains(where: { lower.hasPrefix($0) }), let u = URL(string: s) {
             return u
         }
-        let local = lower.hasPrefix("localhost") || lower.hasPrefix("127.0.0.1")
-        let looksLikeHost = !s.contains(where: { $0.isWhitespace })
-            && (s.contains(".") || local)
-            && !s.hasPrefix(".") && !s.hasSuffix(".")
-        if looksLikeHost, let u = URL(string: (local ? "http://" : "https://") + s) {
-            return u
+        if isAddress(s) {
+            let local = lower.hasPrefix("localhost") || lower.hasPrefix("127.0.0.1")
+            if let u = URL(string: (local ? "http://" : "https://") + s) { return u }
         }
         return engine.url(for: s)
     }
@@ -160,9 +292,23 @@ enum Persistence {
     }
 
     static func save(_ session: SessionData) {
-        let url = fileURL
+        write(session, to: fileURL)
+    }
+
+    static var historyURL: URL { fileURL.deletingLastPathComponent().appendingPathComponent("history.json") }
+
+    static func loadHistory() -> [HistoryEntry] {
+        guard let data = try? Data(contentsOf: historyURL) else { return [] }
+        return (try? JSONDecoder().decode([HistoryEntry].self, from: data)) ?? []
+    }
+
+    static func saveHistory(_ history: [HistoryEntry]) {
+        write(history, to: historyURL)
+    }
+
+    private static func write<T: Encodable>(_ value: T, to url: URL) {
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        if let data = try? JSONEncoder().encode(session) {
+        if let data = try? JSONEncoder().encode(value) {
             try? data.write(to: url, options: .atomic)
         }
     }

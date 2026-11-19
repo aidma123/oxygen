@@ -27,8 +27,11 @@ final class BrowserStore: NSObject, ObservableObject {
     /// Page previews for the tab viewer, kept as compressed JPEG (~25 KB each)
     /// and only decoded while the tab viewer is on screen.
     @Published private(set) var thumbnails: [UUID: Data] = [:]
+    /// Visited pages, for address bar suggestions.
+    @Published private(set) var history: [HistoryEntry] = []
 
     private var webViews: [UUID: WKWebView] = [:]
+    private var historyDirty = false
     private var observers: [UUID: [NSKeyValueObservation]] = [:]
     private var lastActive: [UUID: Date] = [:]
     private var previouslyVisible: Set<UUID> = []
@@ -60,6 +63,8 @@ final class BrowserStore: NSObject, ObservableObject {
             workspaces = [home]
             activeWorkspace = home.id
         }
+        history = Persistence.loadHistory()
+        AppFont.current = settings.font
 
         ContentBlocker.load { [weak self] list in
             Task { @MainActor in
@@ -151,22 +156,60 @@ final class BrowserStore: NSObject, ObservableObject {
         if settings.blockAds, let list = ruleList {
             config.userContentController.add(list)
         }
+        if settings.forceDark {
+            config.userContentController.addUserScript(Self.forceDarkScript)
+        }
         let view = WKWebView(frame: .zero, configuration: config)
         view.allowsBackForwardNavigationGestures = true
         view.navigationDelegate = self
         view.uiDelegate = self
+        // Sites with their own dark theme use it; the script darkens the rest.
+        if settings.forceDark { view.overrideUserInterfaceStyle = .dark }
         return view
     }
+
+    /// Darkens pages that are still light after loading, leaving images and
+    /// video untouched. Pages that are already dark are skipped.
+    static let forceDarkScript = WKUserScript(source: """
+        (() => {
+          const apply = () => {
+            if (document.getElementById('__oxygen_dark')) return;
+            const bg = (el) => {
+              if (!el) return null;
+              const m = getComputedStyle(el).backgroundColor.match(/[\\d.]+/g);
+              if (!m || (m.length === 4 && +m[3] === 0)) return null;
+              return m.map(Number);
+            };
+            const c = bg(document.body) || bg(document.documentElement) || [255, 255, 255];
+            if ((0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]) / 255 < 0.45) return;
+            const s = document.createElement('style');
+            s.id = '__oxygen_dark';
+            s.textContent = 'html{filter:invert(.92) hue-rotate(180deg)!important;background:#fff!important}' +
+              'img,video,picture,canvas,iframe,embed,object,svg image,[style*="background-image"]' +
+              '{filter:invert(1) hue-rotate(180deg)!important}';
+            (document.head || document.documentElement).appendChild(s);
+          };
+          if (document.readyState === 'loading') addEventListener('DOMContentLoaded', apply); else apply();
+        })();
+        """, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
 
     private func load(_ id: UUID) {
         guard webViews[id] == nil, let record = tab(id) else { return }
         let view = makeWebView()
         observers[id] = [
             view.observe(\.title, options: [.new]) { [weak self] wv, _ in
-                Task { @MainActor in self?.update(id) { if let t = wv.title, !t.isEmpty { $0.title = t } } }
+                Task { @MainActor in
+                    guard let self, let t = wv.title, !t.isEmpty else { return }
+                    self.update(id) { $0.title = t }
+                    if let u = wv.url { self.setHistoryTitle(t, for: u) }
+                }
             },
             view.observe(\.url, options: [.new]) { [weak self] wv, _ in
-                Task { @MainActor in self?.update(id) { if let u = wv.url { $0.url = u } } }
+                Task { @MainActor in
+                    guard let self, let u = wv.url else { return }
+                    if self.tab(id)?.url != u { self.recordVisit(u, title: wv.title ?? "") }
+                    self.update(id) { $0.url = u }
+                }
             },
             view.observe(\.estimatedProgress, options: [.new]) { [weak self] wv, _ in
                 Task { @MainActor in self?.progress[id] = wv.estimatedProgress }
@@ -266,7 +309,88 @@ final class BrowserStore: NSObject, ObservableObject {
         }
     }
 
+    // MARK: - History and suggestions
+
+    private func recordVisit(_ url: URL, title: String) {
+        guard let scheme = url.scheme, scheme.hasPrefix("http") else { return }
+        if let i = history.firstIndex(where: { $0.url == url }) {
+            history[i].visits += 1
+            history[i].last = Date()
+            if !title.isEmpty { history[i].title = title }
+        } else {
+            history.append(HistoryEntry(url: url, title: title, visits: 1, last: Date()))
+        }
+        if history.count > 1500 {
+            history = Array(rankedHistory().prefix(1000))
+        }
+        historyDirty = true
+    }
+
+    private func setHistoryTitle(_ title: String, for url: URL) {
+        guard let i = history.firstIndex(where: { $0.url == url }), history[i].title != title else { return }
+        history[i].title = title
+        historyDirty = true
+    }
+
+    /// Most useful first: visited often and recently (same ranking as Windows).
+    private func rankedHistory() -> [HistoryEntry] {
+        let now = Date()
+        func score(_ h: HistoryEntry) -> Double {
+            let days = now.timeIntervalSince(h.last) / 86_400
+            return Double(h.visits).squareRoot() / (1 + days * 0.25)
+        }
+        return history.sorted { score($0) > score($1) }
+    }
+
+    /// Address bar suggestions: go to / search, open tabs, then history.
+    func suggestions(for input: String, newTab: Bool) -> [Suggestion] {
+        let q = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        var out: [Suggestion] = []
+        if q.isEmpty || (!newTab && q == activeTab?.url.absoluteString) {
+            for h in rankedHistory().prefix(6) {
+                out.append(Suggestion(kind: .history, title: h.title.isEmpty ? h.url.absoluteString : h.title, url: h.url, input: h.url.absoluteString))
+            }
+            return out
+        }
+        let lower = q.lowercased()
+        if AddressParser.isAddress(q), let url = AddressParser.url(from: q, engine: settings.searchEngine) {
+            out.append(Suggestion(kind: .go, title: q, url: url, input: q))
+        }
+        out.append(Suggestion(kind: .search, title: q, url: nil, input: q))
+        let open = (essentials + pinnedTabs + regularTabs)
+            .filter { $0.id != activeTabID && ($0.title + " " + $0.url.absoluteString).lowercased().contains(lower) }
+            .prefix(3)
+        for t in open {
+            out.append(Suggestion(kind: .tab(t.id), title: t.displayTitle, url: t.url, input: t.url.absoluteString))
+        }
+        var seen = Set(open.map(\.url))
+        for h in rankedHistory() where out.count < 9 {
+            guard !seen.contains(h.url), (h.title + " " + h.url.absoluteString).lowercased().contains(lower) else { continue }
+            seen.insert(h.url)
+            out.append(Suggestion(kind: .history, title: h.title.isEmpty ? h.url.absoluteString : h.title, url: h.url, input: h.url.absoluteString))
+        }
+        return out
+    }
+
+    func pick(_ s: Suggestion, newTab: Bool) {
+        if case .tab(let id) = s.kind {
+            select(id)
+        } else {
+            go(s.input, newTab: newTab)
+        }
+    }
+
     private func settingsChanged(from old: BrowserSettings) {
+        AppFont.current = settings.font
+        if old.forceDark != settings.forceDark {
+            for (id, view) in webViews {
+                let ucc = view.configuration.userContentController
+                ucc.removeAllUserScripts()
+                if settings.forceDark { ucc.addUserScript(Self.forceDarkScript) }
+                view.overrideUserInterfaceStyle = settings.forceDark ? .dark : .unspecified
+                if visibleIDs().contains(id) { view.reload() }
+            }
+        }
         if old.blockAds != settings.blockAds, let list = ruleList {
             for view in webViews.values {
                 if settings.blockAds {
@@ -335,6 +459,32 @@ final class BrowserStore: NSObject, ObservableObject {
 
     func closeActive() {
         if let id = activeTabID { close(id) }
+    }
+
+    /// Closes every unpinned tab in the current workspace (the Clear button).
+    func clearTabs() {
+        let ids = regularTabs.map(\.id)
+        guard !ids.isEmpty else { return }
+        for id in ids {
+            if let t = tab(id) { closedTabs.append(t) }
+            unload(id)
+            thumbnails[id] = nil
+        }
+        if closedTabs.count > 25 { closedTabs.removeFirst(closedTabs.count - 25) }
+        tabs.removeAll { ids.contains($0.id) }
+        if activeTabID == nil { activeTabs[activeWorkspace] = orderedTabIDs.first }
+        if let pair = split, !pair.allSatisfy({ tab($0) != nil }) { split = nil }
+        refresh()
+    }
+
+    /// iPad: toggles the sidebar between full width and a strip of favicons.
+    func toggleCollapsed() {
+        if compact {
+            compact = false
+            settings.collapsed = true
+        } else {
+            settings.collapsed.toggle()
+        }
     }
 
     func reopenClosed() {
@@ -510,6 +660,10 @@ final class BrowserStore: NSObject, ObservableObject {
             settings: settings,
             compact: compact
         ))
+        if historyDirty {
+            Persistence.saveHistory(history)
+            historyDirty = false
+        }
     }
 }
 

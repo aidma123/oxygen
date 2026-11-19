@@ -14,30 +14,41 @@ struct SidebarView: View {
             essentials
             header
             List {
+                ForEach(store.pinnedTabs) { TabRow(tab: $0) }
+                    .onMove { store.move(section: .pinned, from: $0, to: $1) }
                 if !store.pinnedTabs.isEmpty {
-                    Section {
-                        ForEach(store.pinnedTabs) { TabRow(tab: $0) }
-                            .onMove { store.move(section: .pinned, from: $0, to: $1) }
+                    // Same separator as Windows: a line and a Clear button.
+                    HStack(spacing: 8) {
+                        Rectangle().fill(Color.primary.opacity(0.1)).frame(height: 1)
+                        Button("Clear") { withAnimation(.easeOut(duration: 0.2)) { store.clearTabs() } }
+                            .font(.app(.caption))
+                            .foregroundColor(.secondary)
+                            .buttonStyle(.plain)
+                            .disabled(store.regularTabs.isEmpty)
                     }
-                }
-                Section {
-                    Button { store.requestAddress(newTab: true) } label: {
-                        HStack(spacing: 10) {
-                            Image(systemName: "plus").frame(width: 18)
-                            Text("New Tab")
-                        }
-                        .foregroundColor(.secondary)
-                    }
+                    .padding(.horizontal, 6)
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
-                    ForEach(store.regularTabs) { TabRow(tab: $0) }
-                        .onMove { store.move(section: .regular, from: $0, to: $1) }
+                    .listRowInsets(EdgeInsets(top: 4, leading: 12, bottom: 4, trailing: 12))
                 }
+                Button { store.requestAddress(newTab: true) } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "plus").font(.system(size: 14)).frame(width: 16)
+                        Text("New Tab").font(.app(.subheadline))
+                    }
+                    .foregroundColor(.secondary)
+                }
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+                ForEach(store.regularTabs) { TabRow(tab: $0) }
+                    .onMove { store.move(section: .regular, from: $0, to: $1) }
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
             .environment(\.editMode, $editMode)
+            .environment(\.defaultMinListRowHeight, 38)
             .animation(.easeOut(duration: 0.2), value: store.regularTabs.map(\.id))
+            .animation(.easeOut(duration: 0.2), value: store.pinnedTabs.map(\.id))
             footer
         }
         .background(Color.oxygenFrame(accent: store.accentColor).ignoresSafeArea())
@@ -55,34 +66,41 @@ struct SidebarView: View {
     @ViewBuilder
     private var essentials: some View {
         if !store.essentials.isEmpty {
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 58), spacing: 8)], spacing: 8) {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 56), spacing: 6)], spacing: 6) {
                 ForEach(store.essentials) { tab in
                     let active = store.activeTabID == tab.id
                     Button { store.select(tab.id) } label: {
-                        FaviconView(tab: tab, size: 22)
+                        FaviconView(tab: tab, size: 20)
                             .opacity(store.loadedIDs.contains(tab.id) ? 1 : 0.55)
-                            .frame(maxWidth: .infinity, minHeight: 48)
+                            .frame(maxWidth: .infinity, minHeight: 46)
                             .background(
-                                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                    .fill(active ? Color(.systemBackground) : Color.primary.opacity(0.05))
-                                    .shadow(color: .black.opacity(active ? 0.08 : 0), radius: 2, y: 1)
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .fill(active ? Color.oxygenSelected : Color.oxygenTile)
+                                    .shadow(color: .black.opacity(active ? 0.07 : 0), radius: 2, y: 1)
                             )
+                            .overlay(alignment: .bottom) {
+                                // Accent underline on the open Essential, as on Windows.
+                                if active {
+                                    Capsule().fill(Color.accentColor).frame(width: 12, height: 2).padding(.bottom, 5)
+                                }
+                            }
                     }
                     .buttonStyle(.plain)
                     .contextMenu { TabMenu(tab: tab) }
                 }
             }
-            .padding(.horizontal, 14)
-            .padding(.top, 14)
+            .padding(.horizontal, 12)
+            .padding(.top, 12)
         }
     }
 
     private var header: some View {
         HStack(spacing: 8) {
             Image(systemName: WorkspaceStyle.symbol(for: store.activeWorkspaceModel.icon))
+                .font(.system(size: 15))
                 .foregroundColor(.accentColor)
-                .frame(width: 20)
-            Text(store.activeWorkspaceModel.name).font(.headline)
+                .frame(width: 18)
+            Text(store.activeWorkspaceModel.name).font(.app(.subheadline, weight: .semibold))
             Spacer()
             Menu {
                 Button { editor = .edit(store.activeWorkspace) } label: {
@@ -144,6 +162,77 @@ struct SidebarView: View {
             if value.translation.width < -50 { store.cycleWorkspace(1) }
             if value.translation.width > 50 { store.cycleWorkspace(-1) }
         })
+    }
+}
+
+/// iPad collapsed sidebar: a strip of favicons, like the Windows version's
+/// collapsed sidebar.
+struct SidebarRail: View {
+    @EnvironmentObject private var store: BrowserStore
+    @Binding var showSettings: Bool
+
+    var body: some View {
+        VStack(spacing: 4) {
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 4) {
+                    ForEach(store.essentials) { railItem($0, tile: true) }
+                    Image(systemName: WorkspaceStyle.symbol(for: store.activeWorkspaceModel.icon))
+                        .font(.system(size: 15))
+                        .foregroundColor(.accentColor)
+                        .frame(height: 34)
+                    ForEach(store.pinnedTabs) { railItem($0, tile: false) }
+                    if !store.pinnedTabs.isEmpty {
+                        Rectangle().fill(Color.primary.opacity(0.1)).frame(width: 24, height: 1).padding(.vertical, 4)
+                    }
+                    Button { store.requestAddress(newTab: true) } label: {
+                        Image(systemName: "plus").font(.system(size: 14)).frame(width: 40, height: 36)
+                    }
+                    .foregroundColor(.secondary)
+                    ForEach(store.regularTabs) { railItem($0, tile: false) }
+                }
+                .padding(.top, 12)
+                .animation(.easeOut(duration: 0.2), value: store.orderedTabIDs)
+            }
+            Button { store.cycleWorkspace(1) } label: {
+                Image(systemName: WorkspaceStyle.symbol(for: store.activeWorkspaceModel.icon))
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundColor(.accentColor)
+                    .frame(width: 38, height: 38)
+                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.oxygenTile))
+            }
+            .contextMenu {
+                ForEach(store.workspaces) { ws in
+                    Button { store.switchWorkspace(ws.id) } label: { Label(ws.name, systemImage: WorkspaceStyle.symbol(for: ws.icon)) }
+                }
+            }
+            Button { showSettings = true } label: {
+                Image(systemName: "slider.horizontal.3").frame(width: 38, height: 38)
+            }
+            .foregroundColor(.secondary)
+            .padding(.bottom, 6)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func railItem(_ tab: TabRecord, tile: Bool) -> some View {
+        let active = store.activeTabID == tab.id
+        return Button { store.select(tab.id) } label: {
+            FaviconView(tab: tab, size: tile ? 18 : 16)
+                .opacity(store.loadedIDs.contains(tab.id) ? 1 : 0.55)
+                .frame(width: 40, height: tile ? 38 : 34)
+                .background(
+                    RoundedRectangle(cornerRadius: tile ? 10 : 8, style: .continuous)
+                        .fill(active ? Color.oxygenSelected : (tile ? Color.oxygenTile : Color.clear))
+                        .shadow(color: .black.opacity(active ? 0.06 : 0), radius: 2, y: 1)
+                )
+                .overlay(alignment: .leading) {
+                    if store.isInSplit(tab.id) {
+                        Capsule().fill(Color.accentColor.opacity(0.85)).frame(width: 2).padding(.vertical, 9).padding(.leading, 2)
+                    }
+                }
+        }
+        .buttonStyle(.plain)
+        .contextMenu { TabMenu(tab: tab) }
     }
 }
 
@@ -254,22 +343,33 @@ struct TabRow: View {
                 FaviconView(tab: tab, size: 16)
                     .opacity(store.loadedIDs.contains(tab.id) ? 1 : 0.55)
                 Text(tab.displayTitle)
+                    .font(.app(.subheadline))
                     .lineLimit(1)
                     .foregroundColor(store.loadedIDs.contains(tab.id) ? .primary : .secondary)
                 Spacer(minLength: 0)
-                if store.isInSplit(tab.id) {
-                    Image(systemName: "rectangle.split.2x1")
-                        .font(.caption)
-                        .foregroundColor(.accentColor)
+                if active {
+                    Button { withAnimation(.easeOut(duration: 0.2)) { store.close(tab.id) } } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(.secondary)
+                            .frame(width: 24, height: 24)
+                    }
+                    .buttonStyle(.plain)
                 }
             }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .listRowBackground(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(active ? Color(.systemBackground) : Color.clear)
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(active ? Color.oxygenSelected : Color.clear)
                 .shadow(color: .black.opacity(active ? 0.06 : 0), radius: 2, y: 1)
+                .overlay(alignment: .leading) {
+                    // Split partners are marked with an accent bar, as on Windows.
+                    if store.isInSplit(tab.id) {
+                        Capsule().fill(Color.accentColor.opacity(0.85)).frame(width: 2).padding(.vertical, 9).padding(.leading, 3)
+                    }
+                }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 1)
         )

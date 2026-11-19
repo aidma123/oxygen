@@ -34,7 +34,7 @@ struct TabOverviewView: View {
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
                 ToolbarItemGroup(placement: .bottomBar) {
                     Text("\(store.pinnedTabs.count + store.regularTabs.count) tabs")
-                        .font(.footnote)
+                        .font(.app(.footnote))
                         .foregroundColor(.secondary)
                     Spacer()
                     Button {
@@ -63,7 +63,7 @@ struct TabOverviewView: View {
             HStack(spacing: 6) {
                 Image(systemName: WorkspaceStyle.symbol(for: store.activeWorkspaceModel.icon))
                     .foregroundColor(.accentColor)
-                Text(store.activeWorkspaceModel.name).font(.headline).foregroundColor(.primary)
+                Text(store.activeWorkspaceModel.name).font(.app(.headline)).foregroundColor(.primary)
                 Image(systemName: "chevron.down").font(.caption2.weight(.bold)).foregroundColor(.secondary)
             }
         }
@@ -73,7 +73,7 @@ struct TabOverviewView: View {
         VStack(alignment: .leading, spacing: 10) {
             if let title {
                 Text(title.uppercased())
-                    .font(.caption.weight(.semibold))
+                    .font(.app(.caption, weight: .semibold))
                     .foregroundColor(.secondary)
                     .padding(.leading, 4)
             }
@@ -95,9 +95,9 @@ struct TabOverviewView: View {
                 .font(.system(size: 34, weight: .light))
                 .foregroundColor(.accentColor)
             Text("No tabs in \(store.activeWorkspaceModel.name)")
-                .font(.headline)
+                .font(.app(.headline))
             Text("Open a new tab to get started.")
-                .font(.subheadline)
+                .font(.app(.subheadline))
                 .foregroundColor(.secondary)
         }
         .frame(maxWidth: .infinity)
@@ -122,14 +122,14 @@ struct TabCard: View {
                 HStack(spacing: 8) {
                     FaviconView(tab: tab, size: 14)
                     Text(tab.displayTitle)
-                        .font(.caption.weight(.medium))
+                        .font(.app(.caption, weight: .medium))
                         .lineLimit(1)
                         .foregroundColor(.primary)
                     Spacer(minLength: 0)
                 }
                 .padding(.horizontal, 10)
                 .frame(height: 34)
-                .background(Color(.secondarySystemBackground))
+                .background(Color.oxygenSelected)
             }
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             .overlay(
@@ -167,7 +167,7 @@ struct TabCard: View {
                 VStack(spacing: 10) {
                     FaviconView(tab: tab, size: 36)
                     Text(tab.url.host ?? "")
-                        .font(.caption2)
+                        .font(.app(.caption2))
                         .foregroundColor(.secondary)
                         .lineLimit(1)
                         .padding(.horizontal, 8)

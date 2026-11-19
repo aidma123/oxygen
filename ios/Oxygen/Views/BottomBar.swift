@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// Address bar and navigation controls at the bottom of the screen.
+/// Address bar and navigation controls at the bottom of the screen. Sits on
+/// the frame like the Windows toolbar, with suggestions above it while typing.
 struct BottomBar: View {
     @EnvironmentObject private var store: BrowserStore
     @Environment(\.horizontalSizeClass) private var hSize
@@ -14,43 +15,61 @@ struct BottomBar: View {
         return tab.url.host.map { $0.replacingOccurrences(of: "www.", with: "", options: .anchored) } ?? tab.url.absoluteString
     }
 
+    private var suggestions: [Suggestion] {
+        focused ? store.suggestions(for: text, newTab: newTabMode) : []
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             ZStack(alignment: .leading) {
-                Rectangle().fill(Color.clear).frame(height: 2)
+                Color.clear.frame(height: 2)
                 if let p = store.activeProgress, p > 0, p < 1 {
                     GeometryReader { geo in
-                        Rectangle().fill(Color.accentColor).frame(width: geo.size.width * p, height: 2)
+                        Capsule().fill(Color.accentColor).frame(width: geo.size.width * p, height: 2)
                     }
                     .frame(height: 2)
+                    .transition(.opacity)
                 }
             }
-            HStack(spacing: 16) {
+            .padding(.horizontal, 12)
+            .animation(.easeOut(duration: 0.2), value: store.activeProgress ?? 1)
+            HStack(spacing: 14) {
                 if !focused {
                     Button {
-                        // iPad: show/hide the docked sidebar (compact mode). iPhone: open the drawer.
-                        if hSize == .regular { store.compact.toggle() } else { store.showSidebar.toggle() }
+                        // iPad: collapse/expand the docked sidebar. iPhone and compact mode: open the drawer.
+                        if hSize == .regular && !store.compact { store.toggleCollapsed() } else { store.showSidebar.toggle() }
                     } label: {
                         Image(systemName: "sidebar.left")
                     }
-                    Button { store.goBack() } label: { Image(systemName: "chevron.left") }
+                    Button { store.goBack() } label: { Image(systemName: "arrow.left") }
                         .disabled(!store.canGoBack)
                 }
                 addressField
                 if focused {
                     Button("Cancel") { focused = false }
+                        .font(.app(.body))
                 } else {
-                    Button { store.goForward() } label: { Image(systemName: "chevron.right") }
+                    Button { store.goForward() } label: { Image(systemName: "arrow.right") }
                         .disabled(!store.canGoForward)
                     tabsButton
                     menu
                 }
             }
-            .font(.system(size: 18, weight: .medium))
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
+            .font(.system(size: 17, weight: .regular))
+            .foregroundColor(.secondary)
+            .padding(.horizontal, 14)
+            .padding(.top, 6)
+            .padding(.bottom, 8)
         }
-        .background(.bar)
+        .overlay(alignment: .top) {
+            if !suggestions.isEmpty {
+                suggestionList
+                    .padding(.horizontal, 10)
+                    .alignmentGuide(.top) { $0[.bottom] + 4 }
+                    .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .bottom)))
+            }
+        }
+        .animation(.easeOut(duration: 0.16), value: focused)
         .onAppear { text = displayText }
         .onChange(of: displayText) { value in
             if !focused { text = value }
@@ -72,18 +91,18 @@ struct BottomBar: View {
     }
 
     private var addressField: some View {
-        HStack(spacing: 6) {
-            Image(systemName: store.activeTab?.url.scheme == "https" && !focused ? "lock.fill" : "magnifyingglass")
-                .font(.caption)
-                .foregroundColor(.secondary)
+        HStack(spacing: 8) {
+            Image(systemName: store.activeTab?.url.scheme == "https" && !focused ? "lock" : "magnifyingglass")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(.secondary.opacity(0.8))
             TextField("Search or enter address", text: $text)
                 .focused($focused)
                 .keyboardType(.webSearch)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .submitLabel(.go)
-                .multilineTextAlignment(focused ? .leading : .center)
-                .font(.system(size: 16))
+                .font(.app(.callout))
+                .foregroundColor(.primary)
                 .onSubmit {
                     store.go(text, newTab: newTabMode)
                     focused = false
@@ -95,13 +114,78 @@ struct BottomBar: View {
                 .font(.system(size: 15))
             } else if !focused && store.activeTab != nil {
                 Button { store.reload() } label: { Image(systemName: "arrow.clockwise") }
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.system(size: 14, weight: .medium))
                     .foregroundColor(.secondary)
             }
         }
-        .padding(.horizontal, 12)
-        .frame(height: 40)
-        .background(Capsule().fill(Color.primary.opacity(0.08)))
+        .padding(.horizontal, 11)
+        .frame(height: 38)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(focused ? Color(.systemBackground) : Color.oxygenField)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(Color.accentColor.opacity(focused ? 0.55 : 0), lineWidth: 1)
+                )
+        )
+    }
+
+    private var suggestionList: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if text.trimmingCharacters(in: .whitespaces).isEmpty || (!newTabMode && text == store.activeTab?.url.absoluteString) {
+                Text("Recently visited")
+                    .font(.app(.caption, weight: .semibold))
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 12)
+                    .padding(.top, 10)
+                    .padding(.bottom, 4)
+            }
+            ForEach(suggestions) { s in
+                Button {
+                    store.pick(s, newTab: newTabMode)
+                    focused = false
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: s.symbol)
+                            .font(.system(size: 14))
+                            .foregroundColor(.secondary)
+                            .frame(width: 18)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(s.title)
+                                .font(.app(.callout))
+                                .foregroundColor(.primary)
+                                .lineLimit(1)
+                            if case .search = s.kind {
+                                Text("Search with \(store.settings.searchEngine.name)")
+                                    .font(.app(.caption))
+                                    .foregroundColor(.secondary)
+                            } else if let host = s.url?.host {
+                                Text(host)
+                                    .font(.app(.caption))
+                                    .foregroundColor(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                        Spacer(minLength: 0)
+                        if case .tab = s.kind {
+                            Text("Switch to tab")
+                                .font(.app(.caption))
+                                .foregroundColor(.accentColor)
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.vertical, 4)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color(.systemBackground))
+                .shadow(color: .black.opacity(0.14), radius: 16, y: 4)
+        )
     }
 
     /// Opens the tab viewer; shows how many tabs the workspace has.
@@ -113,8 +197,8 @@ struct BottomBar: View {
             let count = store.pinnedTabs.count + store.regularTabs.count
             Text(count > 99 ? "99+" : "\(count)")
                 .font(.system(size: count > 99 ? 9 : 12, weight: .semibold, design: .rounded))
-                .frame(width: 23, height: 23)
-                .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).stroke(lineWidth: 1.8))
+                .frame(width: 22, height: 22)
+                .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).stroke(lineWidth: 1.6))
         }
         .accessibilityLabel("Show tabs")
     }
@@ -143,9 +227,10 @@ struct BottomBar: View {
                 Button(role: .destructive) { store.close(tab.id) } label: { Label("Close Tab", systemImage: "xmark") }
             }
             Divider()
-            Button { showSettings = true } label: { Label("Settings", systemImage: "gearshape") }
+            Button { showSettings = true } label: { Label("Settings", systemImage: "slider.horizontal.3") }
         } label: {
-            Image(systemName: "ellipsis.circle")
+            Image(systemName: "ellipsis")
+                .frame(width: 24, height: 24)
         }
     }
 }
