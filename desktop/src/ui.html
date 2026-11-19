@@ -1,0 +1,341 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root {
+    --bg: #f1f0f5; --fg: #1d1c22; --muted: #6d6b78; --hover: rgba(0,0,0,.06); --active: #fff;
+    --border: rgba(0,0,0,.08); --accent: #7c6cf0; --menu: #fff; --shadow: 0 6px 24px rgba(0,0,0,.18);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1b1a20; --fg: #ecebf2; --muted: #9a98a6; --hover: rgba(255,255,255,.06);
+            --active: rgba(255,255,255,.11); --border: rgba(255,255,255,.08); --menu: #2a2930; }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; }
+  body { background: var(--bg); color: var(--fg); font: 13px/1.3 "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+         user-select: none; display: flex; flex-direction: column; padding: 8px 6px 6px; gap: 6px;
+         background-image: linear-gradient(160deg, color-mix(in srgb, var(--accent) 14%, transparent), transparent 55%); }
+  body.collapsed { padding: 0; background: var(--accent); }
+  body.collapsed > * { display: none !important; }
+  button { all: unset; cursor: default; border-radius: 7px; display: inline-grid; place-items: center; }
+  button:hover { background: var(--hover); }
+  .row { display: flex; align-items: center; gap: 4px; }
+  #nav button { width: 28px; height: 28px; font-size: 15px; color: var(--muted); }
+  #nav .grow { flex: 1; }
+  #url { width: 100%; border: 1px solid var(--border); background: var(--active); color: var(--fg); border-radius: 9px;
+         padding: 7px 10px; font: inherit; outline: none; }
+  #url:focus { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent); }
+  #essentials { display: grid; grid-template-columns: repeat(auto-fill, minmax(52px, 1fr)); gap: 6px; }
+  #essentials:empty { display: none; }
+  .ess { height: 44px; border-radius: 10px; background: var(--hover); display: grid; place-items: center; position: relative; }
+  .ess.active { background: var(--active); box-shadow: inset 0 0 0 2px var(--accent); }
+  .ess:hover { background: var(--active); }
+  .ess.unloaded img, .ess.unloaded .letter { opacity: .45; }
+  #wshead { padding: 6px 6px 2px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+  #wshead .icon { font-size: 15px; }
+  #lists { flex: 1; overflow-y: auto; overflow-x: hidden; display: flex; flex-direction: column; gap: 1px; }
+  #lists::-webkit-scrollbar { width: 6px; } #lists::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  .sep { height: 1px; background: var(--border); margin: 6px 8px; }
+  .tab { display: flex; align-items: center; gap: 8px; padding: 0 6px 0 8px; height: 34px; border-radius: 9px; position: relative; }
+  .tab:hover { background: var(--hover); }
+  .tab.active { background: var(--active); box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+  .tab.split::before { content: ""; position: absolute; left: 0; top: 8px; bottom: 8px; width: 3px; border-radius: 2px; background: var(--accent); }
+  .tab .title { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tab.unloaded .title, .tab.unloaded img, .tab.unloaded .letter { opacity: .5; }
+  .tab .x { width: 22px; height: 22px; font-size: 12px; color: var(--muted); visibility: hidden; }
+  .tab:hover .x { visibility: visible; }
+  .tab.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+  .fav { width: 16px; height: 16px; flex: none; border-radius: 3px; }
+  .ess .fav { width: 20px; height: 20px; }
+  .letter { width: 16px; height: 16px; flex: none; border-radius: 4px; background: var(--accent); color: #fff; font-size: 10px;
+            font-weight: 700; display: grid; place-items: center; }
+  .ess .letter { width: 22px; height: 22px; font-size: 12px; }
+  #newtab { color: var(--muted); }
+  #newtab .plus { width: 16px; text-align: center; font-size: 16px; }
+  #footer { display: flex; align-items: center; gap: 2px; padding-top: 4px; border-top: 1px solid var(--border); }
+  #wss { display: flex; gap: 2px; flex: 1; overflow-x: auto; }
+  #wss::-webkit-scrollbar { display: none; }
+  .ws { width: 28px; height: 28px; font-size: 15px; flex: none; opacity: .55; }
+  .ws.active { opacity: 1; background: var(--hover); }
+  #footer .tool { width: 28px; height: 28px; color: var(--muted); font-size: 14px; flex: none; }
+  #mem { font-size: 11px; color: var(--muted); padding: 0 6px; display: flex; align-items: center; gap: 6px; }
+  #mem .bar { flex: 1; height: 4px; border-radius: 2px; background: var(--border); overflow: hidden; }
+  #mem .fill { display: block; height: 100%; background: var(--accent); width: 0; transition: width .4s; }
+  #mem.over .fill { background: #e5484d; }
+  #menu { position: fixed; z-index: 10; background: var(--menu); border: 1px solid var(--border); border-radius: 10px;
+          box-shadow: var(--shadow); padding: 4px; min-width: 180px; display: none; }
+  #menu div { padding: 6px 10px; border-radius: 6px; white-space: nowrap; }
+  #menu div:hover { background: var(--hover); }
+  #menu hr { border: 0; border-top: 1px solid var(--border); margin: 4px 0; }
+  #settings { position: fixed; inset: 0; background: var(--bg); z-index: 9; padding: 12px; display: none; flex-direction: column; gap: 10px; overflow-y: auto; }
+  #settings.open { display: flex; }
+  #settings h2 { font-size: 15px; margin: 0 0 4px; }
+  #settings label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 12px; }
+  #settings label.check { flex-direction: row; align-items: center; gap: 8px; color: var(--fg); font-size: 13px; }
+  #settings input[type=number], #settings select { font: inherit; padding: 6px 8px; border-radius: 7px; border: 1px solid var(--border);
+          background: var(--active); color: var(--fg); }
+  #settings .actions { display: flex; gap: 8px; margin-top: 6px; }
+  #settings .btn { padding: 7px 14px; background: var(--accent); color: #fff; border-radius: 8px; }
+  #settings .btn.secondary { background: var(--hover); color: var(--fg); }
+  #settings p { margin: 0; color: var(--muted); font-size: 12px; }
+  #empty { color: var(--muted); padding: 10px 8px; font-size: 12px; }
+  kbd { font: 11px ui-monospace, monospace; background: var(--hover); padding: 1px 4px; border-radius: 4px; }
+</style>
+</head>
+<body>
+  <div id="nav" class="row">
+    <button id="back" title="Back (Alt+Left)">←</button>
+    <button id="fwd" title="Forward (Alt+Right)">→</button>
+    <button id="reload" title="Reload (Ctrl+R)">⟳</button>
+    <span class="grow"></span>
+    <button id="splitbtn" title="Split view (Ctrl+Alt+V)">◫</button>
+    <button id="compactbtn" title="Compact mode (Ctrl+Alt+C)">⇤</button>
+  </div>
+  <input id="url" spellcheck="false" placeholder="Search or enter address">
+  <div id="essentials"></div>
+  <div id="wshead"><span class="icon"></span><span class="name"></span></div>
+  <div id="lists">
+    <div id="pinned"></div>
+    <div class="sep" id="pinsep"></div>
+    <div class="tab" id="newtab"><span class="plus">+</span><span class="title">New tab</span></div>
+    <div id="tabs"></div>
+    <div id="empty"></div>
+  </div>
+  <div id="mem" title="Memory used by the browser and all its WebView2 processes"><span id="memtext"></span><span class="bar"><span class="fill"></span></span></div>
+  <div id="footer">
+    <div id="wss"></div>
+    <button class="tool" id="addws" title="New workspace">＋</button>
+    <button class="tool" id="settingsbtn" title="Settings">⚙</button>
+  </div>
+  <div id="menu"></div>
+  <div id="settings">
+    <h2>Settings</h2>
+    <label>Search engine
+      <select id="s_engine">
+        <option value="duckduckgo">DuckDuckGo</option><option value="google">Google</option>
+        <option value="bing">Bing</option><option value="brave">Brave Search</option><option value="startpage">Startpage</option>
+      </select></label>
+    <label>Memory budget (MB): background tabs are unloaded to stay under this
+      <input id="s_budget" type="number" min="300" max="8000" step="50"></label>
+    <label>Max loaded tabs (including the ones on screen)
+      <input id="s_max" type="number" min="1" max="30"></label>
+    <label>Unload background tabs after (minutes)
+      <input id="s_idle" type="number" min="1" max="240"></label>
+    <label class="check"><input id="s_ads" type="checkbox"> Block ads and trackers</label>
+    <label class="check"><input id="s_compact" type="checkbox"> Compact mode</label>
+    <p>Shortcuts: <kbd>Ctrl+T</kbd> new tab, <kbd>Ctrl+L</kbd> address, <kbd>Ctrl+W</kbd> close, <kbd>Ctrl+Shift+T</kbd> reopen,
+       <kbd>Ctrl+Tab</kbd> next tab, <kbd>Ctrl+1–9</kbd> jump, <kbd>Ctrl+Alt+←/→</kbd> workspaces, <kbd>Ctrl+Alt+V</kbd> split,
+       <kbd>Ctrl+Alt+C</kbd> compact, <kbd>Ctrl+Shift+E</kbd> add to Essentials, <kbd>Alt+click</kbd> a link to Glance, <kbd>F11</kbd> full screen.</p>
+    <div class="actions"><button class="btn" id="s_save">Save</button><button class="btn secondary" id="s_cancel">Cancel</button></div>
+  </div>
+<script>
+const post = (m) => window.ipc.postMessage(JSON.stringify(m));
+const $ = (id) => document.getElementById(id);
+let S = null, newTabMode = false, leaveTimer = null, dragId = null;
+
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+function host(u) { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return ''; } }
+function icon(t) {
+  const h = host(t.url);
+  const letter = esc((t.title || h || '?').trim().charAt(0).toUpperCase() || '?');
+  if (!h) return `<span class="letter">${letter}</span>`;
+  const origin = new URL(t.url).origin;
+  return `<img class="fav" src="${esc(origin)}/favicon.ico" onerror="this.outerHTML='<span class=&quot;letter&quot;>${letter}</span>'">`;
+}
+function tabHTML(t) {
+  const cls = ['tab', t.active && 'active', !t.loaded && 'unloaded', t.inSplit && 'split'].filter(Boolean).join(' ');
+  return `<div class="${cls}" data-id="${t.id}" draggable="true" title="${esc(t.title)}\n${esc(t.url)}">
+    ${icon(t)}<span class="title">${esc(t.title || host(t.url) || 'New tab')}</span><button class="x" data-close="${t.id}">✕</button></div>`;
+}
+
+function draw() {
+  const s = S;
+  document.body.classList.toggle('collapsed', s.compact && !s.peek);
+  const ws = s.workspaces.find((w) => w.id === s.activeWs) || s.workspaces[0];
+  document.documentElement.style.setProperty('--accent', ws.color);
+  if (document.activeElement !== $('url')) $('url').value = s.activeUrl || '';
+  $('essentials').innerHTML = s.essentials.map((t) =>
+    `<div class="ess ${t.active ? 'active' : ''} ${t.loaded ? '' : 'unloaded'}" data-id="${t.id}" draggable="true" title="${esc(t.title)}">${icon(t)}</div>`).join('');
+  $('wshead').querySelector('.icon').textContent = ws.icon;
+  $('wshead').querySelector('.name').textContent = ws.name;
+  $('pinned').innerHTML = s.pinned.map(tabHTML).join('');
+  $('pinsep').style.display = s.pinned.length ? '' : 'none';
+  $('tabs').innerHTML = s.tabs.map(tabHTML).join('');
+  $('empty').innerHTML = !s.tabs.length && !s.pinned.length ? 'No tabs here yet. Press <kbd>Ctrl+T</kbd> to open one.' : '';
+  $('wss').innerHTML = s.workspaces.map((w) =>
+    `<button class="ws ${w.id === s.activeWs ? 'active' : ''}" data-ws="${w.id}" title="${esc(w.name)}">${esc(w.icon)}</button>`).join('');
+  $('splitbtn').style.color = s.split ? 'var(--accent)' : '';
+  $('compactbtn').textContent = s.compact ? '⇥' : '⇤';
+  mem(s.mem, s.settings.memory_budget_mb);
+}
+
+function mem(used, budget) {
+  $('memtext').textContent = `${used} / ${budget} MB`;
+  $('mem').querySelector('.fill').style.width = Math.min(100, (used / budget) * 100) + '%';
+  $('mem').classList.toggle('over', used > budget);
+}
+
+window.zl = {
+  render(s) { S = s; draw(); },
+  mem(used, budget) { if (S) { S.mem = used; mem(used, budget); } },
+  focusUrl(nt) {
+    newTabMode = nt;
+    $('url').value = nt ? '' : (S && S.activeUrl) || '';
+    $('url').focus(); $('url').select();
+  },
+};
+
+// Address bar
+$('url').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && $('url').value.trim()) {
+    post({ t: 'go', input: $('url').value.trim(), newTab: newTabMode || !S.activeId || e.altKey });
+    newTabMode = false; $('url').blur();
+  } else if (e.key === 'Escape') {
+    newTabMode = false; $('url').value = S.activeUrl || ''; $('url').blur();
+    if (S.compact) post({ t: 'peek', on: false });
+  }
+});
+$('url').addEventListener('blur', () => { setTimeout(() => { newTabMode = false; }, 150); });
+$('back').onclick = () => post({ t: 'back' });
+$('fwd').onclick = () => post({ t: 'forward' });
+$('reload').onclick = () => post({ t: 'reload' });
+$('splitbtn').onclick = () => post({ t: 'key', k: 'ctrl+alt+v' });
+$('compactbtn').onclick = () => post({ t: 'compact' });
+$('newtab').onclick = () => zl.focusUrl(true);
+$('addws').onclick = () => {
+  const name = prompt('Workspace name', 'Workspace ' + (S.workspaces.length + 1));
+  if (name) post({ t: 'newWs', name, icon: prompt('Workspace icon (an emoji)', '✨') || '✨' });
+};
+$('wss').addEventListener('click', (e) => { const b = e.target.closest('[data-ws]'); if (b) post({ t: 'ws', id: +b.dataset.ws }); });
+$('wss').addEventListener('contextmenu', (e) => {
+  const b = e.target.closest('[data-ws]'); if (!b) return;
+  e.preventDefault();
+  const id = +b.dataset.ws, w = S.workspaces.find((x) => x.id === id);
+  menu(e, [
+    ['Rename…', () => { const n = prompt('Workspace name', w.name); if (n) post({ t: 'editWs', id, name: n, icon: w.icon }); }],
+    ['Change icon…', () => { const i = prompt('Workspace icon (an emoji)', w.icon); if (i) post({ t: 'editWs', id, name: w.name, icon: i }); }],
+    S.workspaces.length > 1 && ['Delete workspace', () => { if (confirm(`Delete "${w.name}" and close its tabs?`)) post({ t: 'deleteWs', id }); }],
+  ]);
+});
+
+// Tabs: click, close, context menu, drag to reorder
+document.addEventListener('click', (e) => {
+  hideMenu();
+  const x = e.target.closest('[data-close]');
+  if (x) { e.stopPropagation(); post({ t: 'close', id: +x.dataset.close }); return; }
+  const t = e.target.closest('[data-id]');
+  if (t) post({ t: 'select', id: +t.dataset.id });
+});
+document.addEventListener('auxclick', (e) => {
+  const t = e.target.closest('[data-id]');
+  if (t && e.button === 1) post({ t: 'close', id: +t.dataset.id });
+});
+document.addEventListener('contextmenu', (e) => {
+  const el = e.target.closest('[data-id]');
+  if (!el) { if (!e.target.closest('#url')) e.preventDefault(); return; }
+  e.preventDefault();
+  const id = +el.dataset.id;
+  const t = [...S.essentials, ...S.pinned, ...S.tabs].find((x) => x.id === id);
+  const others = S.workspaces.filter((w) => w.id !== S.activeWs);
+  menu(e, [
+    t.essential ? ['Remove from Essentials', () => post({ t: 'essential', id })] : ['Add to Essentials', () => post({ t: 'essential', id })],
+    !t.essential && (t.pinned ? ['Unpin tab', () => post({ t: 'pin', id })] : ['Pin tab', () => post({ t: 'pin', id })]),
+    S.activeId && S.activeId !== id && ['Split view with current tab', () => post({ t: 'split', id })],
+    t.inSplit && ['Close split view', () => post({ t: 'unsplit' })],
+    '-',
+    ['Reload', () => post({ t: 'reloadTab', id })],
+    ['Duplicate', () => post({ t: 'duplicate', id })],
+    t.loaded && !t.active && ['Unload (free memory)', () => post({ t: 'unload', id })],
+    ...(!t.essential ? others.map((w) => [`Move to ${w.icon} ${w.name}`, () => post({ t: 'moveWs', id, ws: w.id })]) : []),
+    '-',
+    ['Close tab', () => post({ t: 'close', id })],
+  ]);
+});
+document.addEventListener('dragstart', (e) => {
+  const t = e.target.closest('[data-id]'); if (!t) return;
+  dragId = +t.dataset.id; e.dataTransfer.effectAllowed = 'move';
+});
+document.addEventListener('dragover', (e) => {
+  if (dragId == null) return;
+  e.preventDefault();
+  document.querySelectorAll('.drop-before').forEach((x) => x.classList.remove('drop-before'));
+  const t = e.target.closest('.tab[data-id]'); if (t) t.classList.add('drop-before');
+});
+document.addEventListener('drop', (e) => {
+  if (dragId == null) return;
+  e.preventDefault();
+  document.querySelectorAll('.drop-before').forEach((x) => x.classList.remove('drop-before'));
+  const target = e.target.closest('[data-id]');
+  let section = 'tabs';
+  if (e.target.closest('#essentials')) section = 'essentials';
+  else if (e.target.closest('#pinned')) section = 'pinned';
+  post({ t: 'move', id: dragId, before: target ? +target.dataset.id : null, section });
+  dragId = null;
+});
+document.addEventListener('dragend', () => { dragId = null; });
+
+function menu(e, items) {
+  const m = $('menu');
+  m.innerHTML = '';
+  items.filter(Boolean).forEach((it) => {
+    if (it === '-') { m.appendChild(document.createElement('hr')); return; }
+    const d = document.createElement('div');
+    d.textContent = it[0];
+    d.onclick = (ev) => { ev.stopPropagation(); hideMenu(); it[1](); };
+    m.appendChild(d);
+  });
+  m.style.display = 'block';
+  const r = m.getBoundingClientRect();
+  m.style.left = Math.min(e.clientX, innerWidth - r.width - 4) + 'px';
+  m.style.top = Math.min(e.clientY, innerHeight - r.height - 4) + 'px';
+}
+function hideMenu() { $('menu').style.display = 'none'; }
+
+// Settings
+$('settingsbtn').onclick = () => {
+  const st = S.settings;
+  $('s_engine').value = st.search_engine; $('s_budget').value = st.memory_budget_mb; $('s_max').value = st.max_loaded_tabs;
+  $('s_idle').value = st.unload_after_mins; $('s_ads').checked = st.block_ads; $('s_compact').checked = st.compact;
+  $('settings').classList.add('open');
+};
+$('s_cancel').onclick = () => $('settings').classList.remove('open');
+$('s_save').onclick = () => {
+  post({ t: 'settings', settings: { ...S.settings,
+    search_engine: $('s_engine').value,
+    memory_budget_mb: Math.max(300, +$('s_budget').value || 800),
+    max_loaded_tabs: Math.max(1, +$('s_max').value || 4),
+    unload_after_mins: Math.max(1, +$('s_idle').value || 10),
+    block_ads: $('s_ads').checked, compact: $('s_compact').checked } });
+  $('settings').classList.remove('open');
+};
+
+// Compact mode: hovering the thin edge reveals the sidebar.
+let peekSent = 0;
+const reveal = () => {
+  clearTimeout(leaveTimer);
+  if (S && S.compact && !S.peek && Date.now() - peekSent > 400) { peekSent = Date.now(); post({ t: 'peek', on: true }); }
+};
+document.documentElement.addEventListener('mouseenter', reveal);
+document.addEventListener('mousemove', reveal);
+document.documentElement.addEventListener('mouseleave', () => {
+  if (!S || !S.compact || !S.peek || $('settings').classList.contains('open') || document.activeElement === $('url')) return;
+  leaveTimer = setTimeout(() => post({ t: 'peek', on: false }), 350);
+});
+
+// Shortcuts while the sidebar has focus
+addEventListener('keydown', (e) => {
+  const k = e.key.toLowerCase();
+  const combo = (e.ctrlKey || e.metaKey ? 'ctrl+' : '') + (e.altKey ? 'alt+' : '') + (e.shiftKey ? 'shift+' : '') + k;
+  const local = { 'ctrl+t': () => zl.focusUrl(true), 'ctrl+l': () => zl.focusUrl(false) };
+  if (local[combo]) { e.preventDefault(); local[combo](); return; }
+  if (e.target === $('url') && !e.ctrlKey && !e.altKey) return;
+  const fwd = ['ctrl+w', 'ctrl+shift+t', 'ctrl+tab', 'ctrl+shift+tab', 'ctrl+alt+c', 'ctrl+alt+v', 'ctrl+alt+arrowleft',
+    'ctrl+alt+arrowright', 'ctrl+shift+e', 'f11', 'escape', 'ctrl+r', 'f5', 'alt+arrowleft', 'alt+arrowright'];
+  if (fwd.includes(combo) || /^ctrl\+[1-9]$/.test(combo)) { e.preventDefault(); post({ t: 'key', k: combo }); }
+});
+
+post({ t: 'ready' });
+</script>
+</body>
+</html>

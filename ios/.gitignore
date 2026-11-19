@@ -1,0 +1,5 @@
+ZenLite.xcodeproj/
+ZenLite/Info.plist
+build/
+Payload/
+*.ipa
