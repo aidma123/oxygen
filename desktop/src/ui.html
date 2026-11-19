@@ -46,6 +46,18 @@
 :root[data-font="georgia"] { --font: Georgia, "Times New Roman", serif; }
 :root[data-font="verdana"] { --font: Verdana, Tahoma, sans-serif; }
 
+/* Native controls (dropdown lists, scrollbars) follow the active theme. */
+:root { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
+option { background: var(--menu); color: var(--fg); }
+#s_font option[value="system"] { font-family: "Segoe UI Variable Text", "Segoe UI", sans-serif; }
+#s_font option[value="jetbrains"] { font-family: "JetBrains Mono", monospace; }
+#s_font option[value="segoe"] { font-family: "Segoe UI", sans-serif; }
+#s_font option[value="cascadia"] { font-family: "Cascadia Code", "Cascadia Mono", monospace; }
+#s_font option[value="consolas"] { font-family: Consolas, monospace; }
+#s_font option[value="georgia"] { font-family: Georgia, serif; }
+#s_font option[value="verdana"] { font-family: Verdana, sans-serif; }
+
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; overflow: hidden; }
 body {
