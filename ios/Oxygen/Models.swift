@@ -211,8 +211,8 @@ enum Shared {
         case .duckduckgo: endpoint = "https://duckduckgo.com/ac/?q=\(q)&type=list"
         }
         guard let url = URL(string: endpoint),
-              let (data, _) = try? await URLSession.shared.data(from: url),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [Any],
+              let response = try? await URLSession.shared.data(from: url),
+              let json = try? JSONSerialization.jsonObject(with: response.0) as? [Any],
               json.count > 1, let list = json[1] as? [String] else { return [] }
         return Array(list.prefix(5))
     }

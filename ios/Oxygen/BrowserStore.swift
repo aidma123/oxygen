@@ -807,11 +807,11 @@ final class BrowserStore: NSObject, ObservableObject {
         case "cache":
             let types: Set<String> = [WKWebsiteDataTypeDiskCache, WKWebsiteDataTypeMemoryCache, WKWebsiteDataTypeFetchCache]
             store.removeData(ofTypes: types, modifiedSince: .distantPast) { [weak self] in
-                self?.privacyStatus = "Cache cleared."
+                Task { @MainActor in self?.privacyStatus = "Cache cleared." }
             }
         case "cookies":
             store.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) { [weak self] in
-                self?.privacyStatus = "Cookies and site data cleared. You may need to sign in to sites again."
+                Task { @MainActor in self?.privacyStatus = "Cookies and site data cleared. You may need to sign in to sites again." }
             }
         default: break
         }
