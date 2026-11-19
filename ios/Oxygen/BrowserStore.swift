@@ -18,11 +18,15 @@ final class BrowserStore: NSObject, ObservableObject {
     }
     @Published var compact = false
     @Published var showSidebar = false
+    @Published var showTabs = false
     @Published var glance: GlanceItem?
     @Published var addressRequest: AddressRequest?
     @Published private(set) var loadedIDs: Set<UUID> = []
     @Published private(set) var progress: [UUID: Double] = [:]
     @Published private(set) var backForward: [UUID: (Bool, Bool)] = [:]
+    /// Page previews for the tab viewer, kept as compressed JPEG (~25 KB each)
+    /// and only decoded while the tab viewer is on screen.
+    @Published private(set) var thumbnails: [UUID: Data] = [:]
 
     private var webViews: [UUID: WKWebView] = [:]
     private var observers: [UUID: [NSKeyValueObservation]] = [:]
@@ -33,13 +37,18 @@ final class BrowserStore: NSObject, ObservableObject {
     private var cancellables: Set<AnyCancellable> = []
     private var timer: Timer?
 
-    static let palette = ["#7c6cf0", "#e5484d", "#30a46c", "#f76b15", "#0090ff", "#d6409f"]
-    static let icons = ["✨", "💼", "🎮", "📚", "🎵", "🛒", "🧪", "🌍"]
-
     override init() {
         super.init()
         if let s = Persistence.load(), !s.workspaces.isEmpty {
-            workspaces = s.workspaces
+            // Older versions stored emoji icons and a purple accent.
+            workspaces = s.workspaces.map { ws in
+                var ws = ws
+                if WorkspaceStyle.symbols[ws.icon] == nil {
+                    ws.icon = ws.name.lowercased() == "home" ? "home" : "globe"
+                }
+                if ws.colorHex.lowercased() == "#7c6cf0" { ws.colorHex = WorkspaceStyle.colors[0] }
+                return ws
+            }
             tabs = s.tabs
             activeWorkspace = s.workspaces.contains(where: { $0.id == s.activeWorkspace }) ? s.activeWorkspace : s.workspaces[0].id
             activeTabs = s.activeTabs
@@ -47,7 +56,7 @@ final class BrowserStore: NSObject, ObservableObject {
             settings = s.settings
             compact = s.compact
         } else {
-            let home = Workspace(name: "Home", icon: "🏠", colorHex: Self.palette[0])
+            let home = Workspace(name: "Home", icon: "home", colorHex: WorkspaceStyle.colors[0])
             workspaces = [home]
             activeWorkspace = home.id
         }
@@ -205,12 +214,36 @@ final class BrowserStore: NSObject, ObservableObject {
             load(id)
             lastActive[id] = now
         }
-        // The idle timer for a tab starts when it leaves the screen.
+        // The idle timer for a tab starts when it leaves the screen. Capture
+        // its preview now, while it is still drawn and before it can unload.
         for id in previouslyVisible.subtracting(visible) {
             lastActive[id] = now
+            captureThumbnail(id)
         }
         previouslyVisible = Set(visible)
         enforceLimits()
+    }
+
+    /// Renders a small preview of a loaded tab for the tab viewer.
+    func captureThumbnail(_ id: UUID) {
+        guard let view = webViews[id], view.window != nil, view.bounds.width > 1, view.bounds.height > 1 else { return }
+        let width: CGFloat = 180
+        let scale = width / view.bounds.width
+        let height = min(view.bounds.height * scale, width * 4 / 3)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 2
+        format.opaque = true
+        let image = UIGraphicsImageRenderer(size: CGSize(width: width, height: height), format: format).image { _ in
+            view.drawHierarchy(
+                in: CGRect(x: 0, y: 0, width: view.bounds.width * scale, height: view.bounds.height * scale),
+                afterScreenUpdates: false
+            )
+        }
+        thumbnails[id] = image.jpegData(compressionQuality: 0.6)
+    }
+
+    func captureVisibleThumbnails() {
+        for id in visibleIDs() { captureThumbnail(id) }
     }
 
     /// Unloads least-recently-used background tabs to respect the loaded-tab
@@ -295,6 +328,7 @@ final class BrowserStore: NSObject, ObservableObject {
         if closedTabs.count > 25 { closedTabs.removeFirst() }
         unload(id)
         tabs.remove(at: i)
+        thumbnails[id] = nil
         if isInSplit(id) { split = nil }
         refresh()
     }
@@ -411,25 +445,29 @@ final class BrowserStore: NSObject, ObservableObject {
         switchWorkspace(workspaces[((pos + step) % n + n) % n].id)
     }
 
-    func addWorkspace(name: String, icon: String) {
+    func addWorkspace(name: String, icon: String, colorHex: String) {
         let ws = Workspace(
             name: name.isEmpty ? "Workspace \(workspaces.count + 1)" : name,
-            icon: icon.isEmpty ? Self.icons[workspaces.count % Self.icons.count] : String(icon.prefix(2)),
-            colorHex: Self.palette[workspaces.count % Self.palette.count]
+            icon: icon,
+            colorHex: colorHex
         )
         workspaces.append(ws)
         switchWorkspace(ws.id)
     }
 
-    func editWorkspace(_ id: UUID, name: String, icon: String) {
+    func editWorkspace(_ id: UUID, name: String, icon: String, colorHex: String) {
         guard let i = workspaces.firstIndex(where: { $0.id == id }) else { return }
         if !name.isEmpty { workspaces[i].name = name }
-        if !icon.isEmpty { workspaces[i].icon = String(icon.prefix(2)) }
+        workspaces[i].icon = icon
+        workspaces[i].colorHex = colorHex
     }
 
     func deleteWorkspace(_ id: UUID) {
         guard workspaces.count > 1 else { return }
-        for t in tabs where !t.essential && t.workspaceID == id { unload(t.id) }
+        for t in tabs where !t.essential && t.workspaceID == id {
+            unload(t.id)
+            thumbnails[t.id] = nil
+        }
         tabs.removeAll { !$0.essential && $0.workspaceID == id }
         workspaces.removeAll { $0.id == id }
         activeTabs[id] = nil

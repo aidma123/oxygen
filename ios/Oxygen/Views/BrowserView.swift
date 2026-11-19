@@ -35,8 +35,12 @@ struct BrowserView: View {
         .sheet(isPresented: $showSettings) {
             SettingsView().environmentObject(store)
         }
+        .fullScreenCover(isPresented: $store.showTabs) {
+            TabOverviewView().environmentObject(store)
+        }
         .background(shortcuts)
         .tint(store.accentColor)
+        .preferredColorScheme(store.settings.colorScheme)
     }
 
     private var drawer: some View {
@@ -143,31 +147,29 @@ struct StartView: View {
     @EnvironmentObject private var store: BrowserStore
 
     var body: some View {
-        VStack(spacing: 18) {
+        VStack(spacing: 14) {
             Spacer()
-            Image(systemName: "sparkles")
-                .font(.system(size: 44))
+            Image(systemName: WorkspaceStyle.symbol(for: store.activeWorkspaceModel.icon))
+                .font(.system(size: 34, weight: .light))
                 .foregroundColor(.accentColor)
-            Text("\(store.activeWorkspaceModel.icon) \(store.activeWorkspaceModel.name)")
-                .font(.title2.weight(.semibold))
+            Text(store.activeWorkspaceModel.name)
+                .font(.title3.weight(.semibold))
             Text("No tabs open in this workspace.")
+                .font(.subheadline)
                 .foregroundColor(.secondary)
             Button {
                 store.requestAddress(newTab: true)
             } label: {
                 Label("New Tab", systemImage: "plus")
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 10)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 6)
             }
             .buttonStyle(.borderedProminent)
+            .buttonBorderShape(.capsule)
+            .padding(.top, 6)
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(
-            LinearGradient(
-                colors: [Color.accentColor.opacity(0.18), Color(.systemBackground)],
-                startPoint: .topLeading, endPoint: .bottomTrailing
-            )
-        )
+        .background(Color.oxygenFrame(accent: store.accentColor))
     }
 }

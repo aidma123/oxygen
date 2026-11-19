@@ -33,9 +33,17 @@ struct SettingsView: View {
                     Button("Clear browsing data", role: .destructive) { store.clearBrowsingData() }
                 }
                 Section {
+                    Picker("Theme", selection: Binding(
+                        get: { store.settings.theme ?? "system" },
+                        set: { store.settings.theme = $0 == "system" ? nil : $0 }
+                    )) {
+                        Text("System").tag("system")
+                        Text("Light").tag("light")
+                        Text("Dark").tag("dark")
+                    }
                     Toggle("Compact mode", isOn: $store.compact)
                 } header: {
-                    Text("Layout")
+                    Text("Appearance")
                 } footer: {
                     Text("Long-press a link for Glance, split view, or a background tab. On iPad, ⌘T, ⌘W, ⌘L, ⌘⇧T, ⌃Tab, ⌘⌥←/→ and ⌘⌥V work with a keyboard.")
                 }
@@ -43,6 +51,7 @@ struct SettingsView: View {
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { Button("Done") { dismiss() } }
+            .preferredColorScheme(store.settings.colorScheme)
             .onAppear { memoryMB = MemoryInfo.footprintMB() }
         }
     }

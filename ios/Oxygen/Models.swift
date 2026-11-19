@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import UIKit
 
 struct Workspace: Codable, Identifiable, Hashable {
     var id = UUID()
@@ -61,6 +62,48 @@ struct BrowserSettings: Codable, Equatable {
     /// Background tabs are unloaded after this many minutes.
     var unloadAfterMinutes = 10
     var blockAds = true
+    /// "light", "dark" or nil for the system setting. Optional so sessions
+    /// saved by older versions still load.
+    var theme: String?
+
+    var colorScheme: ColorScheme? {
+        switch theme {
+        case "light": return .light
+        case "dark": return .dark
+        default: return nil
+        }
+    }
+}
+
+/// Workspace icons (shared names with the Windows version) and colours.
+enum WorkspaceStyle {
+    static let iconOrder = [
+        "home", "briefcase", "code", "book", "music", "game", "cart", "flask", "globe",
+        "heart", "camera", "folder", "chat", "terminal", "leaf", "sparkle", "star", "moon",
+    ]
+    static let symbols: [String: String] = [
+        "home": "house", "briefcase": "briefcase", "code": "chevron.left.forwardslash.chevron.right",
+        "book": "book", "music": "music.note", "game": "gamecontroller", "cart": "cart",
+        "flask": "flask", "globe": "globe", "heart": "heart", "camera": "camera", "folder": "folder",
+        "chat": "bubble.left", "terminal": "terminal", "leaf": "leaf", "sparkle": "sparkles",
+        "star": "star", "moon": "moon",
+    ]
+    /// Soft colours; the first is oxygen's default light blue.
+    static let colors = ["#6f9fd8", "#5fb0b4", "#7fb58c", "#d6ad6c", "#d98c9c", "#9d92d8", "#8a9bb0", "#e0937a"]
+
+    static func symbol(for icon: String) -> String { symbols[icon] ?? "globe" }
+}
+
+extension Color {
+    /// The soft blue frame behind the sidebar, tinted by the workspace colour.
+    static func oxygenFrame(accent: Color) -> some View {
+        ZStack {
+            Color(UIColor { $0.userInterfaceStyle == .dark
+                ? UIColor(red: 0.08, green: 0.106, blue: 0.141, alpha: 1)
+                : UIColor(red: 0.914, green: 0.941, blue: 0.973, alpha: 1) })
+            accent.opacity(0.08)
+        }
+    }
 }
 
 struct SessionData: Codable {

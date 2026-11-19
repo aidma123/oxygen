@@ -42,6 +42,7 @@ struct BottomBar: View {
                 } else {
                     Button { store.goForward() } label: { Image(systemName: "chevron.right") }
                         .disabled(!store.canGoForward)
+                    tabsButton
                     menu
                 }
             }
@@ -103,8 +104,26 @@ struct BottomBar: View {
         .background(Capsule().fill(Color.primary.opacity(0.08)))
     }
 
+    /// Opens the tab viewer; shows how many tabs the workspace has.
+    private var tabsButton: some View {
+        Button {
+            store.captureVisibleThumbnails()
+            store.showTabs = true
+        } label: {
+            let count = store.pinnedTabs.count + store.regularTabs.count
+            Text(count > 99 ? "99+" : "\(count)")
+                .font(.system(size: count > 99 ? 9 : 12, weight: .semibold, design: .rounded))
+                .frame(width: 23, height: 23)
+                .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).stroke(lineWidth: 1.8))
+        }
+        .accessibilityLabel("Show tabs")
+    }
+
     private var menu: some View {
         Menu {
+            Button { store.captureVisibleThumbnails(); store.showTabs = true } label: {
+                Label("Show All Tabs", systemImage: "square.on.square")
+            }
             Button { store.requestAddress(newTab: true) } label: { Label("New Tab", systemImage: "plus") }
             if let tab = store.activeTab {
                 ShareLink(item: tab.url) { Label("Share", systemImage: "square.and.arrow.up") }
