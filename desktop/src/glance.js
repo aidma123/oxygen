@@ -1,13 +1,13 @@
 // Injected into the Glance preview panel.
 (() => {
-  if (window.__zenliteGlance) return;
-  window.__zenliteGlance = true;
+  if (window.__oxygenGlance) return;
+  window.__oxygenGlance = true;
   const post = (m) => { try { window.ipc.postMessage(m); } catch (_) {} };
   addEventListener('keydown', (e) => { if (e.key === 'Escape') post('close'); }, true);
   const mount = () => {
-    if (document.getElementById('__zenlite_glance')) return;
+    if (document.getElementById('__oxygen_glance')) return;
     const host = document.createElement('div');
-    host.id = '__zenlite_glance';
+    host.id = '__oxygen_glance';
     const root = host.attachShadow({ mode: 'closed' });
     root.innerHTML = `<style>
       :host { all: initial; }

@@ -1,4 +1,4 @@
-//! ZenLite: a Zen-style browser (vertical tabs, workspaces, Essentials, split
+//! oxygen: a Zen-style browser (vertical tabs, workspaces, Essentials, split
 //! view, compact mode, Glance) built on the system webview (WebView2 on
 //! Windows) and designed to stay under a fixed memory budget.
 
@@ -16,7 +16,7 @@ use tao::{
     dpi::LogicalSize,
     event::{Event, WindowEvent},
     event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy},
-    window::{Fullscreen, Window, WindowBuilder},
+    window::{Fullscreen, Icon, Window, WindowBuilder},
 };
 use wry::{http::Request, NewWindowResponse, Rect, WebContext, WebView, WebViewBuilder};
 
@@ -460,8 +460,8 @@ impl App {
             .map(|i| self.tabs[i].title.as_str())
             .filter(|t| !t.is_empty());
         self.window.set_title(&match title {
-            Some(t) => format!("{t} — ZenLite"),
-            None => "ZenLite".into(),
+            Some(t) => format!("{t} — oxygen"),
+            None => "oxygen".into(),
         });
     }
 
@@ -1010,9 +1010,10 @@ fn main() {
     let event_loop = EventLoopBuilder::<Ev>::with_user_event().build();
     let proxy = event_loop.create_proxy();
     let window = WindowBuilder::new()
-        .with_title("ZenLite")
+        .with_title("oxygen")
         .with_inner_size(LogicalSize::new(1280.0, 800.0))
         .with_min_inner_size(LogicalSize::new(520.0, 360.0))
+        .with_window_icon(Icon::from_rgba(include_bytes!("../assets/icon64.rgba").to_vec(), 64, 64).ok())
         .build(&event_loop)
         .expect("could not create the window");
     let mut app = App::new(window, proxy.clone(), session::load());

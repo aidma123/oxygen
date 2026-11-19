@@ -1,7 +1,7 @@
 // Injected into every web page tab (main frame only).
 (() => {
-  if (window.__zenlite) return;
-  window.__zenlite = true;
+  if (window.__oxygen) return;
+  window.__oxygen = true;
   const post = (m) => { try { window.ipc.postMessage(JSON.stringify(m)); } catch (_) {} };
 
   // Browser shortcuts must work even while a page has focus.

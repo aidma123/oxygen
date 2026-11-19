@@ -37,7 +37,7 @@ enum ContentBlocker {
             return
         }
         WKContentRuleListStore.default().compileContentRuleList(
-            forIdentifier: "zenlite-blocklist",
+            forIdentifier: "oxygen-blocklist",
             encodedContentRuleList: json
         ) { list, _ in
             completion(list)

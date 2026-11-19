@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct ZenLiteApp: App {
+struct OxygenApp: App {
     @StateObject private var store = BrowserStore()
     @Environment(\.scenePhase) private var phase
 

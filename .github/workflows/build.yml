@@ -1,4 +1,4 @@
-name: Build ZenLite browser
+name: Build oxygen browser
 
 on:
   push:
@@ -21,8 +21,8 @@ jobs:
       - run: cargo build --release
       - uses: actions/upload-artifact@v4
         with:
-          name: ZenLite-windows-x64
-          path: desktop/target/release/zenlite.exe
+          name: oxygen-windows-x64
+          path: desktop/target/release/oxygen.exe
 
   ios:
     name: iOS (.ipa, unsigned)
@@ -36,15 +36,15 @@ jobs:
       - run: xcodegen generate
       - name: Build
         run: >
-          xcodebuild -project ZenLite.xcodeproj -scheme ZenLite -configuration Release
+          xcodebuild -project Oxygen.xcodeproj -scheme Oxygen -configuration Release
           -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build
           CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build
       - name: Package .ipa
         run: |
           mkdir -p Payload
-          cp -R build/Build/Products/Release-iphoneos/ZenLite.app Payload/
-          zip -qry ZenLite.ipa Payload
+          cp -R build/Build/Products/Release-iphoneos/Oxygen.app Payload/
+          zip -qry oxygen.ipa Payload
       - uses: actions/upload-artifact@v4
         with:
-          name: ZenLite-ios-unsigned
-          path: ios/ZenLite.ipa
+          name: oxygen-ios-unsigned
+          path: ios/oxygen.ipa

@@ -1,4 +1,6 @@
-# ZenLite
+<p align="center"><img src="assets/logo.png" width="160" alt="oxygen logo"></p>
+
+# oxygen
 
 A lightweight browser with Zen-style features, for Windows and iOS, built to stay under 1 GB of RAM.
 
@@ -24,11 +26,11 @@ The budget, tab limit and idle time can all be changed in Settings. A single ver
 
 ## Downloads
 
-Every push builds both apps with GitHub Actions. Download them from the **Actions** tab: open the latest **Build ZenLite browser** run, then scroll to **Artifacts**.
+Every push builds both apps with GitHub Actions. Download them from the **Actions** tab: open the latest **Build oxygen browser** run, then scroll to **Artifacts**.
 
 ### Windows
 
-Download `ZenLite-windows-x64` and run `zenlite.exe`. It needs the WebView2 Runtime, which comes with Windows 10 and 11.
+Download `oxygen-windows-x64` and run `oxygen.exe`. It needs the WebView2 Runtime, which comes with Windows 10 and 11.
 
 | Shortcut | Action |
 |---|---|
@@ -44,13 +46,13 @@ Download `ZenLite-windows-x64` and run `zenlite.exe`. It needs the WebView2 Runt
 
 Drag tabs to reorder them, or onto Essentials or the pinned area. Right-click a tab for more options.
 
-Chrome extensions: put unpacked extensions in `%LOCALAPPDATA%\ZenLite\extensions\<name>\`.
+Chrome extensions: put unpacked extensions in `%LOCALAPPDATA%\Oxygen\extensions\<name>\`.
 
 ### iOS (unsigned .ipa)
 
-Download `ZenLite-ios-unsigned` and install `ZenLite.ipa` with [AltStore](https://altstore.io) or [Sideloadly](https://sideloadly.io), which sign it with your Apple ID. With a free Apple ID, the app has to be re-signed every 7 days.
+Download `oxygen-ios-unsigned` and install `oxygen.ipa` with [AltStore](https://altstore.io) or [Sideloadly](https://sideloadly.io), which sign it with your Apple ID. With a free Apple ID, the app has to be re-signed every 7 days.
 
 ## Building locally
 
 - **Windows**: `cd desktop && cargo build --release`
-- **iOS** (needs a Mac): `cd ios && xcodegen generate && open ZenLite.xcodeproj`
+- **iOS** (needs a Mac): `cd ios && xcodegen generate && open Oxygen.xcodeproj`
