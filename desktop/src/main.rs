@@ -5,8 +5,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod blocker;
+mod extensions;
+mod keys;
 mod memory;
 mod platform;
+mod search;
 mod session;
 
 use serde_json::{json, Value};
@@ -44,8 +47,23 @@ enum Ev {
     Glance(String),
     Title(u64, String),
     Url(u64, String),
-    NewTab(String),
+    /// A link asked for a new tab: (url, switch to it).
+    NewTab(String, bool),
     Tick,
+    /// (id, name, enabled) of every installed extension.
+    Extensions(Vec<(String, String, bool)>),
+    /// An extension folder finished loading (or failed).
+    ExtensionAdded(std::path::PathBuf, Result<String, String>),
+    /// A Web Store download finished (or failed).
+    ExtensionDownloaded(Result<std::path::PathBuf, String>),
+    /// An extension was switched on/off or removed.
+    ExtensionsChanged,
+    /// Live search suggestions for a query.
+    Suggestions(String, Vec<String>),
+    /// A page entered or left HTML full screen (e.g. a video).
+    PageFullscreen(u64, bool),
+    /// Browsing data finished clearing.
+    Cleared(&'static str),
 }
 
 struct Tab {
@@ -55,6 +73,9 @@ struct Tab {
     workspace: u32,
     pinned: bool,
     essential: bool,
+    /// Pinned tabs and Essentials remember the page they were pinned on, so
+    /// you can always get back to it (as in Zen).
+    pinned_url: Option<String>,
     /// `None` means the tab is unloaded: it costs no memory until selected.
     view: Option<WebView>,
     shown: bool,
@@ -70,6 +91,18 @@ impl Tab {
             workspace: self.workspace,
             pinned: self.pinned,
             essential: self.essential,
+            pinned_url: self.pinned_url.clone(),
+        }
+    }
+
+    /// Keeps the pinned page in step with the tab's pinned/Essential state.
+    fn sync_pin(&mut self) {
+        if self.pinned || self.essential {
+            if self.pinned_url.is_none() {
+                self.pinned_url = Some(self.url.clone());
+            }
+        } else {
+            self.pinned_url = None;
         }
     }
 }
@@ -115,6 +148,17 @@ struct App {
     cur: (f64, f64),
     anim: Option<Anim>,
     exit: bool,
+    extensions: Vec<extensions::Extension>,
+    /// WebView2 extension id -> unpacked folder.
+    extension_folders: HashMap<String, std::path::PathBuf>,
+    extension_status: String,
+    extension_popup: Option<(String, WebView)>,
+    searches: Vec<search::SearchEntry>,
+    searches_dirty: bool,
+    /// The tab showing a full-screen video, and whether the window was
+    /// already full screen before it.
+    page_fullscreen: Option<(u64, bool)>,
+    privacy_status: String,
 }
 
 fn rect(x: f64, y: f64, w: f64, h: f64) -> Rect {
@@ -145,13 +189,44 @@ fn base64(bytes: &[u8]) -> String {
     out
 }
 
+/// @font-face rule with the bundled JetBrains Mono inlined (built once).
+fn jetbrains_face() -> &'static str {
+    static FACE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    FACE.get_or_init(|| {
+        format!(
+            "@font-face{{font-family:'JetBrains Mono';src:url(data:font/woff2;base64,{}) format('woff2');font-weight:100 800;font-display:block}}",
+            base64(JETBRAINS_MONO)
+        )
+    })
+}
+
 /// The sidebar page, with the bundled JetBrains Mono font inlined.
 fn ui_html() -> String {
-    let face = format!(
-        "@font-face{{font-family:'JetBrains Mono';src:url(data:font/woff2;base64,{}) format('woff2');font-weight:100 800;font-display:block}}",
-        base64(JETBRAINS_MONO)
-    );
-    UI_HTML.replace("/*OXYGEN_FONT_FACE*/", &face)
+    UI_HTML.replace("/*OXYGEN_FONT_FACE*/", jetbrains_face())
+}
+
+/// Tells pages to use the interface font ("Use this font on websites").
+fn site_font_script(s: &Settings) -> String {
+    if !s.font_on_sites {
+        return "window.__OXYGEN_SITE_FONT=null;".into();
+    }
+    let family = match s.font.as_str() {
+        "jetbrains" => "'JetBrains Mono', ui-monospace, monospace",
+        "segoe" => "'Segoe UI', sans-serif",
+        "cascadia" => "'Cascadia Code', 'Cascadia Mono', monospace",
+        "consolas" => "Consolas, monospace",
+        "georgia" => "Georgia, serif",
+        "verdana" => "Verdana, sans-serif",
+        _ => "'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif",
+    };
+    let face = if s.font == "jetbrains" { jetbrains_face() } else { "" };
+    format!("window.__OXYGEN_SITE_FONT={};", json!({ "family": family, "face": face }))
+}
+
+/// Everything a page needs from the browser before its own scripts run.
+fn page_setup_script(s: &Settings) -> String {
+    format!("{}
+{}", keys::page_script(s), site_font_script(s))
 }
 
 /// Parses `rgb(r, g, b)` / `rgba(r, g, b, a)` as produced by getComputedStyle.
@@ -169,9 +244,11 @@ fn platform_builder<'a>(b: WebViewBuilder<'a>, _env: &EnvConfig, _theme: &str) -
     #[cfg(windows)]
     {
         use wry::WebViewBuilderExtWindows;
+        // Extensions are loaded once at startup (see load_extensions), not per tab.
         b.with_additional_browser_args(&_env.browser_args)
             .with_browser_extensions_enabled(true)
-            .with_extensions_path(session::data_dir().join("extensions"))
+            .with_scroll_bar_style(wry::ScrollBarStyle::FluentOverlay)
+            .with_devtools(true)
             .with_theme(wry_theme(_theme))
     }
     #[cfg(not(windows))]
@@ -212,17 +289,18 @@ fn build_content(
     window: &Window,
     ctx: &mut WebContext,
     env: &EnvConfig,
-    theme: &str,
+    settings: &Settings,
     proxy: &EventLoopProxy<Ev>,
-    block_ads: bool,
     id: u64,
     url: &str,
     bounds: Rect,
 ) -> Option<WebView> {
-    let (p1, p2, p3, p4) = (proxy.clone(), proxy.clone(), proxy.clone(), proxy.clone());
+    let (p1, p2, p3, p4, p5) = (proxy.clone(), proxy.clone(), proxy.clone(), proxy.clone(), proxy.clone());
+    let setup = page_setup_script(settings);
     let builder = WebViewBuilder::new_with_web_context(ctx)
         .with_bounds(bounds)
-        .with_initialization_script_for_main_only(CONTENT_JS, true)
+        .with_initialization_script_for_main_only(format!("{setup}
+{CONTENT_JS}"), true)
         .with_ipc_handler(move |r: Request<String>| {
             let _ = p1.send_event(Ev::Content(id, r.into_body()));
         })
@@ -232,12 +310,17 @@ fn build_content(
         .with_on_page_load_handler(move |_, u| {
             let _ = p3.send_event(Ev::Url(id, u));
         })
-        .with_new_window_req_handler(move |u, _| {
-            // Links that want a new window open as a background tab instead.
-            let _ = p4.send_event(Ev::NewTab(u));
+        .with_new_window_req_handler(move |u, features| {
+            // Pop-ups that ask for a size (sign-in windows like "Sign in with
+            // Google") open as real pop-ups so they can report back to the page.
+            // Other new-window links open as a tab you are switched to.
+            if features.size.is_some() {
+                return NewWindowResponse::Allow;
+            }
+            let _ = p4.send_event(Ev::NewTab(u, true));
             NewWindowResponse::Deny
         });
-    let view = match platform_builder(builder, env, theme).build_as_child(window) {
+    let view = match platform_builder(builder, env, &settings.theme).build_as_child(window) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("failed to create tab webview: {e}");
@@ -245,9 +328,13 @@ fn build_content(
         }
     };
     // Install the blocker before the first request goes out.
-    if block_ads {
+    if settings.block_ads {
         blocker::install(&view);
     }
+    platform::set_autofill(&view, settings.save_passwords);
+    platform::on_page_fullscreen(&view, move |on| {
+        let _ = p5.send_event(Ev::PageFullscreen(id, on));
+    });
     let _ = view.load_url(url);
     Some(view)
 }
@@ -264,21 +351,32 @@ fn percent_encode(s: &str) -> String {
     out
 }
 
+const SCHEMES: [&str; 6] = ["http://", "https://", "file://", "about:", "edge://", "data:"];
+
+fn is_local(lower: &str) -> bool {
+    lower.starts_with("localhost") || lower.starts_with("127.0.0.1")
+}
+
+fn looks_like_host(s: &str) -> bool {
+    !s.contains(char::is_whitespace) && (s.contains('.') || is_local(&s.to_ascii_lowercase())) && !s.starts_with('.') && !s.ends_with('.')
+}
+
+/// Whether address-bar input is a search rather than an address.
+fn is_search_input(input: &str) -> bool {
+    let s = input.trim();
+    let lower = s.to_ascii_lowercase();
+    !s.is_empty() && !SCHEMES.iter().any(|p| lower.starts_with(p)) && !looks_like_host(s)
+}
+
 /// Turns address-bar input into a URL: either the address itself or a search.
 fn normalize_input(input: &str, engine: &str) -> String {
     let s = input.trim();
     let lower = s.to_ascii_lowercase();
-    const SCHEMES: [&str; 6] = ["http://", "https://", "file://", "about:", "edge://", "data:"];
     if SCHEMES.iter().any(|p| lower.starts_with(p)) {
         return s.to_string();
     }
-    let local = lower.starts_with("localhost") || lower.starts_with("127.0.0.1");
-    let looks_like_host = !s.contains(char::is_whitespace)
-        && (s.contains('.') || local)
-        && !s.starts_with('.')
-        && !s.ends_with('.');
-    if looks_like_host {
-        return format!("{}{s}", if local { "http://" } else { "https://" });
+    if looks_like_host(s) {
+        return format!("{}{s}", if is_local(&lower) { "http://" } else { "https://" });
     }
     let base = match engine {
         "google" => "https://www.google.com/search?q=",
@@ -330,9 +428,14 @@ impl App {
                 workspace: t.workspace,
                 pinned: t.pinned,
                 essential: t.essential,
+                pinned_url: t.pinned_url,
                 view: None,
                 shown: false,
                 last_active: now,
+            })
+            .map(|mut t: Tab| {
+                t.sync_pin();
+                t
             })
             .collect();
         let force_dark_at_start = s.settings.force_dark;
@@ -362,6 +465,14 @@ impl App {
             cur: (0.0, 0.0),
             anim: None,
             exit: false,
+            extensions: Vec::new(),
+            extension_folders: HashMap::new(),
+            extension_status: String::new(),
+            extension_popup: None,
+            searches: session::load_searches(),
+            searches_dirty: false,
+            page_fullscreen: None,
+            privacy_status: String::new(),
         };
         app.cur = app.targets();
         // Only the visible tab is loaded at startup; the rest restore lazily.
@@ -479,6 +590,18 @@ impl App {
 
     /// Positions every webview, loading visible tabs and hiding the rest.
     fn layout(&mut self) {
+        // A full-screen video fills the whole window, with no sidebar or margins.
+        if let Some((id, _)) = self.page_fullscreen {
+            let (ww, wh) = self.window_size();
+            if let Some(v) = self.idx(id).and_then(|i| self.tabs[i].view.as_ref()) {
+                let _ = self.chrome.set_visible(false);
+                let _ = v.set_bounds(rect(0.0, 0.0, ww, wh));
+                platform::square_corners(v);
+                platform::raise(v);
+                return;
+            }
+            self.page_fullscreen = None;
+        }
         let (_, wh) = self.window_size();
         let scale = self.window.scale_factor();
         let chrome_w = self.cur.0;
@@ -501,9 +624,8 @@ impl App {
                     &self.window,
                     &mut self.ctx,
                     &self.env,
-                    &self.settings.theme,
+                    &self.settings,
                     &self.proxy,
-                    self.settings.block_ads,
                     *id,
                     &url,
                     rect(sx, sy, sw, sh),
@@ -533,6 +655,11 @@ impl App {
             }
             t.shown = false;
             t.last_active = now; // the idle timer starts when the tab is hidden
+        }
+        if let Some((_, p)) = &self.extension_popup {
+            let (px, py, pw, ph) = self.extension_popup_rect();
+            let _ = p.set_bounds(rect(px, py, pw, ph));
+            platform::round_corners(p, pw, ph, scale, 10.0);
         }
         if let Some(g) = &self.glance {
             let (gx, gy, gw, gh) = self.glance_rect();
@@ -591,6 +718,7 @@ impl App {
             json!({
                 "id": t.id, "url": t.url, "title": t.title, "loaded": t.view.is_some(),
                 "active": Some(t.id) == active, "essential": t.essential, "pinned": t.pinned,
+                "pinnedUrl": t.pinned_url, "away": t.pinned_url.as_ref().is_some_and(|p| *p != t.url),
             })
         };
         let ws = self.active_ws;
@@ -617,6 +745,14 @@ impl App {
             "split": self.split.map(|(a, b)| [a, b]), "mode": self.mode(),
             "settings": self.settings, "mem": self.mem_mb,
             "restartNeeded": self.settings.force_dark != self.force_dark_at_start,
+            "keyActions": keys::actions(&self.settings),
+            "extSupported": cfg!(windows),
+            "extensions": self.extensions,
+            "extStatus": self.extension_status,
+            "extPopup": self.extension_popup.as_ref().map(|(id, _)| id.clone()),
+            "privacyStatus": self.privacy_status,
+            "storeId": extensions::store_id_from_url(&active_url),
+            "storeInstalled": extensions::store_id_from_url(&active_url).is_some_and(|sid| self.extension_folders.values().any(|d| extensions::folder_name(d) == sid)),
         });
         let _ = self.chrome.evaluate_script(&format!("window.zl&&zl.render({state})"));
     }
@@ -646,6 +782,10 @@ impl App {
         if self.history_dirty {
             session::save_history(&self.history);
             self.history_dirty = false;
+        }
+        if self.searches_dirty {
+            session::save_searches(&self.searches);
+            self.searches_dirty = false;
         }
     }
 
@@ -689,7 +829,10 @@ impl App {
             .take(300)
             .map(|h| json!({ "url": h.url, "title": h.title }))
             .collect();
-        let _ = self.chrome.evaluate_script(&format!("window.zl&&zl.history({})", Value::Array(list)));
+        let searches: Vec<&str> = self.searches.iter().take(100).map(|s| s.query.as_str()).collect();
+        let _ = self
+            .chrome
+            .evaluate_script(&format!("window.zl&&zl.history({},{})", Value::Array(list), json!(searches)));
     }
 
     fn active_view(&self) -> Option<&WebView> {
@@ -707,6 +850,7 @@ impl App {
             workspace: self.active_ws,
             pinned: false,
             essential: false,
+            pinned_url: None,
             view: None, // background tabs stay unloaded until you look at them
             shown: false,
             last_active: Instant::now(),
@@ -725,6 +869,7 @@ impl App {
         self.active_ws = ws;
         self.active_tab.insert(ws, id);
         self.glance = None;
+        self.extension_popup = None;
         if self.peek {
             self.peek = false;
             self.retarget(true);
@@ -812,6 +957,8 @@ impl App {
                 self.tabs[i].title = t.title;
                 self.tabs[i].pinned = t.pinned;
                 self.tabs[i].essential = t.essential;
+                self.tabs[i].pinned_url = t.pinned_url;
+                self.tabs[i].sync_pin();
             }
             self.select(id);
         }
@@ -903,8 +1050,11 @@ impl App {
             .with_ipc_handler(move |r: Request<String>| {
                 let _ = p1.send_event(Ev::Glance(r.into_body()));
             })
-            .with_new_window_req_handler(move |u, _| {
-                let _ = p2.send_event(Ev::NewTab(u));
+            .with_new_window_req_handler(move |u, features| {
+                if features.size.is_some() {
+                    return NewWindowResponse::Allow;
+                }
+                let _ = p2.send_event(Ev::NewTab(u, true));
                 NewWindowResponse::Deny
             });
         if let Ok(v) = platform_builder(builder, &self.env, &self.settings.theme).build_as_child(&self.window) {
@@ -926,6 +1076,116 @@ impl App {
         }
     }
 
+    // MARK: Extensions
+
+    /// Loads every unpacked extension in the profile, once per start.
+    fn load_extensions(&mut self) {
+        for dir in extensions::installed_folders() {
+            let proxy = self.proxy.clone();
+            let d = dir.clone();
+            extensions::add(&self.chrome, &dir, move |result| {
+                let _ = proxy.send_event(Ev::ExtensionAdded(d, result));
+            });
+        }
+        self.refresh_extensions();
+    }
+
+    fn refresh_extensions(&self) {
+        let proxy = self.proxy.clone();
+        extensions::list(&self.chrome, move |list| {
+            let _ = proxy.send_event(Ev::Extensions(list));
+        });
+    }
+
+    fn install_extension(&mut self, input: &str) {
+        let Some(id) = extensions::parse_store_id(input) else {
+            self.extension_status = "That isn't a Chrome Web Store link or extension ID.".into();
+            self.render();
+            return;
+        };
+        self.extension_status = "Installing…".into();
+        self.render();
+        let proxy = self.proxy.clone();
+        std::thread::spawn(move || {
+            let _ = proxy.send_event(Ev::ExtensionDownloaded(extensions::download_from_store(&id)));
+        });
+    }
+
+    fn extension_by_id(&self, id: &str) -> Option<&extensions::Extension> {
+        self.extensions.iter().find(|e| e.id == id)
+    }
+
+    fn set_extension_enabled(&mut self, id: String, on: bool) {
+        if let Some(dir) = self.extension_folders.get(&id) {
+            let name = extensions::folder_name(dir);
+            let mut disabled = extensions::load_disabled();
+            disabled.retain(|n| *n != name);
+            if !on {
+                disabled.push(name);
+            }
+            extensions::save_disabled(&disabled);
+        }
+        if !on && self.extension_popup.as_ref().is_some_and(|(p, _)| *p == id) {
+            self.extension_popup = None;
+        }
+        let proxy = self.proxy.clone();
+        extensions::set_enabled(&self.chrome, id, on, move || {
+            let _ = proxy.send_event(Ev::ExtensionsChanged);
+        });
+    }
+
+    fn remove_extension(&mut self, id: String) {
+        if self.extension_popup.as_ref().is_some_and(|(p, _)| *p == id) {
+            self.extension_popup = None;
+        }
+        // Delete the files too, or it would load again next start.
+        if let Some(dir) = self.extension_folders.remove(&id) {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+        let proxy = self.proxy.clone();
+        extensions::remove(&self.chrome, id, move || {
+            let _ = proxy.send_event(Ev::ExtensionsChanged);
+        });
+    }
+
+    fn extension_popup_rect(&self) -> (f64, f64, f64, f64) {
+        let (wx, _, _, wh) = self.content_area();
+        let h = (wh - 40.0).clamp(200.0, 580.0);
+        (wx + 8.0, MARGIN + 44.0, 380.0, h)
+    }
+
+    /// Opens (or closes) an extension's popup page next to the sidebar.
+    fn toggle_extension_popup(&mut self, id: String) {
+        if self.extension_popup.as_ref().is_some_and(|(p, _)| *p == id) {
+            self.extension_popup = None;
+            return;
+        }
+        let Some(ext) = self.extension_by_id(&id) else { return };
+        if ext.popup.is_empty() {
+            self.extension_status = format!("{} has no popup. It works in the background.", ext.name);
+            self.render();
+            return;
+        }
+        let url = format!("chrome-extension://{}/{}", ext.id, ext.popup);
+        let (x, y, w, h) = self.extension_popup_rect();
+        let proxy = self.proxy.clone();
+        let builder = WebViewBuilder::new_with_web_context(&mut self.ctx)
+            .with_bounds(rect(x, y, w, h))
+            .with_url(&url)
+            .with_new_window_req_handler(move |u, features| {
+                if features.size.is_some() {
+                    return NewWindowResponse::Allow;
+                }
+                let _ = proxy.send_event(Ev::NewTab(u, true));
+                NewWindowResponse::Deny
+            });
+        if let Ok(v) = platform_builder(builder, &self.env, &self.settings.theme).build_as_child(&self.window) {
+            platform::round_corners(&v, w, h, self.window.scale_factor(), 10.0);
+            let _ = v.focus();
+            self.extension_popup = Some((id, v));
+        }
+    }
+
     fn restart(&mut self) {
         self.save();
         if let Ok(exe) = std::env::current_exe() {
@@ -935,55 +1195,21 @@ impl App {
         }
     }
 
+    /// A key combo from the sidebar or a page: fixed keys first, then the
+    /// user's shortcuts (defaults in keybinds.json, changes in Settings).
     fn on_key(&mut self, k: &str) {
         match k {
-            "ctrl+t" => self.focus_address(true),
-            "ctrl+l" => self.focus_address(false),
-            "ctrl+w" => {
-                if self.glance.is_some() {
-                    self.close_glance();
-                } else if let Some(a) = self.active() {
-                    self.close(a);
-                }
-            }
-            "ctrl+shift+t" => self.reopen_closed(),
-            "ctrl+tab" => self.cycle_tab(1),
-            "ctrl+shift+tab" => self.cycle_tab(-1),
-            "ctrl+alt+s" => self.set_layout_mode(false, !(self.settings.collapsed && !self.settings.compact)),
-            "ctrl+alt+c" => self.set_layout_mode(!self.settings.compact, self.settings.collapsed),
-            "ctrl+alt+v" => self.toggle_split(),
-            "ctrl+alt+arrowleft" => self.cycle_ws(-1),
-            "ctrl+alt+arrowright" => self.cycle_ws(1),
-            "ctrl+shift+e" => {
-                if let Some(a) = self.active() {
-                    self.toggle_essential(a);
-                }
-            }
-            "f11" => {
-                let fs = self.window.fullscreen().is_some();
-                self.window.set_fullscreen(if fs { None } else { Some(Fullscreen::Borderless(None)) });
-            }
             "escape" => {
+                self.extension_popup = None;
                 self.close_glance();
                 self.set_peek(false);
             }
-            "ctrl+r" | "f5" => {
-                if let Some(v) = self.active_view() {
-                    let _ = v.reload();
-                }
-            }
-            "alt+arrowleft" => {
-                if let Some(v) = self.active_view() {
-                    let _ = v.go_back();
-                }
-            }
-            "alt+arrowright" => {
-                if let Some(v) = self.active_view() {
-                    let _ = v.go_forward();
-                }
-            }
+            "f5" => self.run_action("reload"),
             _ => {
-                if let Some(n) = k.strip_prefix("ctrl+").and_then(|d| d.parse::<usize>().ok()) {
+                if let Some(action) = keys::action_for(&self.settings, k) {
+                    self.run_action(&action);
+                } else if let Some(n) = k.strip_prefix("ctrl+").and_then(|d| d.parse::<usize>().ok()) {
+                    // Ctrl+1..8 jump to a tab, Ctrl+9 to the last one.
                     let list = self.ws_tab_ids(self.active_ws);
                     let target = if n == 9 { list.last() } else { list.get(n.wrapping_sub(1)) };
                     if let Some(id) = target.copied() {
@@ -994,6 +1220,61 @@ impl App {
         }
     }
 
+    fn run_action(&mut self, action: &str) {
+        match action {
+            "new_tab" => self.focus_address(true),
+            "focus_address" => self.focus_address(false),
+            "close_tab" => {
+                if self.glance.is_some() {
+                    self.close_glance();
+                } else if let Some(a) = self.active() {
+                    self.close(a);
+                }
+            }
+            "reopen_tab" => self.reopen_closed(),
+            "next_tab" => self.cycle_tab(1),
+            "prev_tab" => self.cycle_tab(-1),
+            "collapse_sidebar" => self.set_layout_mode(false, !(self.settings.collapsed && !self.settings.compact)),
+            "compact_mode" => self.set_layout_mode(!self.settings.compact, self.settings.collapsed),
+            "split_view" => self.toggle_split(),
+            "prev_workspace" => self.cycle_ws(-1),
+            "next_workspace" => self.cycle_ws(1),
+            "add_essential" => {
+                if let Some(a) = self.active() {
+                    self.toggle_essential(a);
+                }
+            }
+            "fullscreen" => {
+                let fs = self.window.fullscreen().is_some();
+                self.window.set_fullscreen(if fs { None } else { Some(Fullscreen::Borderless(None)) });
+            }
+            "reload" => {
+                if let Some(v) = self.active_view() {
+                    let _ = v.reload();
+                }
+            }
+            "back" => {
+                if let Some(v) = self.active_view() {
+                    let _ = v.go_back();
+                }
+            }
+            "forward" => {
+                if let Some(v) = self.active_view() {
+                    let _ = v.go_forward();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Re-sends shortcut and font settings to open pages.
+    fn push_page_setup(&self) {
+        let script = format!("{}
+window.__oxygenApplyFont&&__oxygenApplyFont();", page_setup_script(&self.settings));
+        for v in self.tabs.iter().filter_map(|t| t.view.as_ref()) {
+            let _ = v.evaluate_script(&script);
+        }
+    }
     fn toggle_essential(&mut self, id: u64) {
         if let Some(i) = self.idx(id) {
             let t = &mut self.tabs[i];
@@ -1002,12 +1283,21 @@ impl App {
             if !t.essential {
                 t.workspace = self.active_ws;
             }
+            t.sync_pin();
             self.render();
         }
     }
 
     fn apply_settings(&mut self, new: Settings) {
         let old = std::mem::replace(&mut self.settings, new);
+        if old.keybinds != self.settings.keybinds || old.font != self.settings.font || old.font_on_sites != self.settings.font_on_sites {
+            self.push_page_setup();
+        }
+        if old.save_passwords != self.settings.save_passwords {
+            for v in self.tabs.iter().filter_map(|t| t.view.as_ref()) {
+                platform::set_autofill(v, self.settings.save_passwords);
+            }
+        }
         if old.theme != self.settings.theme {
             let theme = self.settings.theme.clone();
             for v in self.tabs.iter().filter_map(|t| t.view.as_ref()).chain(self.glance.as_ref()) {
@@ -1029,6 +1319,7 @@ impl App {
         match v["t"].as_str().unwrap_or("") {
             "ready" => {
                 self.chrome_ready = true;
+                self.load_extensions();
                 self.render();
                 if self.tabs.is_empty() && !self.settings.compact && !self.settings.collapsed {
                     self.focus_address(true);
@@ -1042,7 +1333,13 @@ impl App {
             }
             "history" => self.send_history(),
             "go" => {
-                let url = normalize_input(v["input"].as_str().unwrap_or(""), &self.settings.search_engine);
+                let input = v["input"].as_str().unwrap_or("").trim().to_string();
+                let url = normalize_input(&input, &self.settings.search_engine);
+                // Remember searches (not addresses) for the address bar.
+                if is_search_input(&input) {
+                    search::remember(&mut self.searches, &input, now_secs());
+                    self.searches_dirty = true;
+                }
                 self.set_peek(false);
                 let active = self.active();
                 match active.filter(|_| !v["newTab"].as_bool().unwrap_or(false)) {
@@ -1065,9 +1362,13 @@ impl App {
             "select" => self.select(id),
             "close" => self.close(id),
             "clear" => self.clear_tabs(),
-            "back" => self.on_key("alt+arrowleft"),
-            "forward" => self.on_key("alt+arrowright"),
-            "reload" => self.on_key("ctrl+r"),
+            "back" => self.run_action("back"),
+            "forward" => self.run_action("forward"),
+            "reload" => self.run_action("reload"),
+            "action" => {
+                let a = v["id"].as_str().unwrap_or("").to_string();
+                self.run_action(&a);
+            }
             "collapse" => {
                 if self.settings.compact {
                     self.set_layout_mode(false, true);
@@ -1083,6 +1384,29 @@ impl App {
             "pin" => {
                 if let Some(i) = self.idx(id) {
                     self.tabs[i].pinned = !self.tabs[i].pinned;
+                    self.tabs[i].sync_pin();
+                    self.render();
+                }
+            }
+            "resetPin" => {
+                // Go back to the page the tab was pinned on.
+                if let Some(i) = self.idx(id) {
+                    if let Some(url) = self.tabs[i].pinned_url.clone() {
+                        self.tabs[i].url = url.clone();
+                        match &self.tabs[i].view {
+                            Some(view) => {
+                                let _ = view.load_url(&url);
+                            }
+                            None => self.select(id),
+                        }
+                        self.render();
+                    }
+                }
+            }
+            "setPinUrl" => {
+                // Make the tab's current page its pinned page.
+                if let Some(i) = self.idx(id) {
+                    self.tabs[i].pinned_url = Some(self.tabs[i].url.clone());
                     self.render();
                 }
             }
@@ -1155,6 +1479,7 @@ impl App {
                         t.workspace = self.active_ws;
                     }
                 }
+                t.sync_pin();
                 let pos = before.and_then(|b| self.idx(b)).unwrap_or(self.tabs.len());
                 self.tabs.insert(pos, t);
                 self.render();
@@ -1202,6 +1527,68 @@ impl App {
                 }
             }
             "restart" => self.restart(),
+            "suggest" => {
+                let q = v["q"].as_str().unwrap_or("").to_string();
+                if self.settings.search_suggestions && !q.trim().is_empty() {
+                    let engine = self.settings.search_engine.clone();
+                    let proxy = self.proxy.clone();
+                    std::thread::spawn(move || {
+                        let list = search::fetch_suggestions(&engine, &q);
+                        let _ = proxy.send_event(Ev::Suggestions(q, list));
+                    });
+                }
+            }
+            "clearData" => {
+                let kind = v["kind"].as_str().unwrap_or("");
+                let proxy = self.proxy.clone();
+                match kind {
+                    "history" => {
+                        self.history.clear();
+                        self.history_dirty = true;
+                        platform::clear_browsing_data(&self.chrome, platform::ClearKind::History, move || {
+                            let _ = proxy.send_event(Ev::Cleared("History cleared."));
+                        });
+                    }
+                    "searches" => {
+                        self.searches.clear();
+                        self.searches_dirty = true;
+                        self.privacy_status = "Search history cleared.".into();
+                        self.render();
+                    }
+                    "cache" => platform::clear_browsing_data(&self.chrome, platform::ClearKind::Cache, move || {
+                        let _ = proxy.send_event(Ev::Cleared("Cache cleared."));
+                    }),
+                    "cookies" => platform::clear_browsing_data(&self.chrome, platform::ClearKind::CookiesAndSiteData, move || {
+                        let _ = proxy.send_event(Ev::Cleared("Cookies and site data cleared. You may need to sign in to sites again."));
+                    }),
+                    _ => {}
+                }
+            }
+            "extInstall" => {
+                let input = v["input"].as_str().unwrap_or("").to_string();
+                self.install_extension(&input);
+            }
+            "extToggle" => {
+                if let Some(ext) = v["ext"].as_str() {
+                    self.set_extension_enabled(ext.to_string(), v["on"].as_bool().unwrap_or(true));
+                }
+            }
+            "extRemove" => {
+                if let Some(ext) = v["ext"].as_str() {
+                    self.remove_extension(ext.to_string());
+                }
+            }
+            "extPopup" => {
+                if let Some(ext) = v["ext"].as_str() {
+                    self.toggle_extension_popup(ext.to_string());
+                    self.render();
+                }
+            }
+            "extFolder" => {
+                let dir = extensions::folder();
+                let _ = std::fs::create_dir_all(&dir);
+                let _ = std::process::Command::new("explorer").arg(dir).spawn();
+            }
             "key" => {
                 let k = v["k"].as_str().unwrap_or("").to_string();
                 self.on_key(&k);
@@ -1241,6 +1628,17 @@ impl App {
                             self.set_tab_url(id, u);
                         }
                     }
+                    "openTab" => {
+                        // Ctrl+click / middle-click open in the background, as in Chrome.
+                        if let Some(u) = v["url"].as_str() {
+                            self.open_tab(u.to_string(), !v["background"].as_bool().unwrap_or(false));
+                        }
+                    }
+                    "pageclick" => {
+                        if self.extension_popup.take().is_some() {
+                            self.render();
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -1271,8 +1669,80 @@ impl App {
                 }
             }
             Ev::Url(id, url) => self.set_tab_url(id, &url),
-            Ev::NewTab(url) => {
-                self.open_tab(url, false);
+            Ev::NewTab(url, foreground) => {
+                self.open_tab(url, foreground);
+            }
+            Ev::Extensions(list) => {
+                // Only extensions oxygen manages (WebView2 also lists hidden built-in ones).
+                self.extensions = list
+                    .into_iter()
+                    .filter(|(id, _, _)| self.extension_folders.contains_key(id))
+                    .map(|(id, name, enabled)| {
+                        let (icon, popup) = self
+                            .extension_folders
+                            .get(&id)
+                            .map(|d| extensions::manifest_details(d))
+                            .unwrap_or_default();
+                        extensions::Extension { id, name, enabled, icon, popup }
+                    })
+                    .collect();
+                self.extensions.sort_by_key(|e| e.name.to_lowercase());
+                self.render();
+            }
+            Ev::ExtensionAdded(dir, result) => {
+                match result {
+                    Ok(id) => {
+                        if extensions::load_disabled().contains(&extensions::folder_name(&dir)) {
+                            let proxy = self.proxy.clone();
+                            extensions::set_enabled(&self.chrome, id.clone(), false, move || {
+                                let _ = proxy.send_event(Ev::ExtensionsChanged);
+                            });
+                        }
+                        self.extension_folders.insert(id, dir);
+                        if self.extension_status == "Installing…" {
+                            self.extension_status = "Installed.".into();
+                        }
+                    }
+                    Err(e) => {
+                        self.extension_status = format!("{}: {e}", extensions::folder_name(&dir));
+                    }
+                }
+                self.refresh_extensions();
+            }
+            Ev::ExtensionDownloaded(result) => match result {
+                Ok(dir) => {
+                    let proxy = self.proxy.clone();
+                    let d = dir.clone();
+                    extensions::add(&self.chrome, &dir, move |r| {
+                        let _ = proxy.send_event(Ev::ExtensionAdded(d, r));
+                    });
+                }
+                Err(e) => {
+                    self.extension_status = e;
+                    self.render();
+                }
+            },
+            Ev::ExtensionsChanged => self.refresh_extensions(),
+            Ev::Suggestions(q, list) => {
+                let _ = self
+                    .chrome
+                    .evaluate_script(&format!("window.zl&&zl.suggestions({},{})", json!(q), json!(list)));
+            }
+            Ev::Cleared(msg) => {
+                self.privacy_status = msg.into();
+                self.render();
+            }
+            Ev::PageFullscreen(id, on) => {
+                if on {
+                    let was = self.window.fullscreen().is_some();
+                    self.page_fullscreen = Some((id, was));
+                    self.window.set_fullscreen(Some(Fullscreen::Borderless(None)));
+                } else if let Some((_, was)) = self.page_fullscreen.take() {
+                    if !was {
+                        self.window.set_fullscreen(None);
+                    }
+                }
+                self.layout();
             }
             Ev::Tick => {
                 self.mem_mb = self.meter.total_mb();
@@ -1366,6 +1836,15 @@ mod tests {
         assert_eq!(normalize_input("rust lang", "duckduckgo"), "https://duckduckgo.com/?q=rust+lang");
         assert_eq!(normalize_input("c++", "google"), "https://www.google.com/search?q=c%2B%2B");
         assert_eq!(normalize_input("hello", "bing"), "https://www.bing.com/search?q=hello");
+    }
+
+    #[test]
+    fn tells_searches_from_addresses() {
+        assert!(is_search_input("hello"));
+        assert!(is_search_input("rust lang"));
+        assert!(!is_search_input("example.com"));
+        assert!(!is_search_input("https://a.b"));
+        assert!(!is_search_input("localhost:3000"));
     }
 
     #[test]

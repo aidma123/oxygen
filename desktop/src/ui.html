@@ -128,6 +128,24 @@ svg.i { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-widt
 .fav .letter { width: 16px; height: 16px; border-radius: 4px; background: color-mix(in srgb, var(--accent) 70%, var(--fg)); color: #fff;
   font: 600 9.5px/16px var(--font); text-align: center; }
 
+/* Extensions: toolbar buttons, Web Store bar, settings rows */
+#exts { display: flex; flex-wrap: wrap; gap: 2px; padding: 0 2px; }
+#exts:empty { display: none; }
+#exts button { width: 30px; height: 30px; }
+#exts button.open { background: var(--press); }
+#exts button.off img { opacity: .4; filter: grayscale(1); }
+.exticon { width: 16px; height: 16px; border-radius: 3px; object-fit: contain; flex: none; }
+#storebar { display: none; align-items: center; gap: 8px; padding: 6px 6px 6px 10px; border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent); }
+#storebar.show { display: flex; animation: pop .16s var(--ease); }
+#storebar .txt { flex: 1; font-size: 12px; color: var(--muted); }
+.extrow .lbl { display: flex; align-items: center; gap: 10px; }
+.extrow .lbl span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.extrow button.rm { width: 28px; height: 28px; }
+.ext-only { display: none; }
+:root[data-ext="on"] .ext-only { display: block; }
+:root[data-mode="rail"] #exts, :root[data-mode="rail"] #storebar { display: none !important; }
+
 /* Essentials */
 #essentials { display: grid; grid-template-columns: repeat(auto-fill, minmax(48px, 1fr)); gap: 6px; padding: 4px 0 2px; }
 #essentials:empty { display: none; }
@@ -160,7 +178,15 @@ svg.i { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-widt
 .tab.unloaded .title { color: var(--muted); }
 .tab .x { width: 24px; height: 24px; opacity: 0; }
 .tab:hover .x, .tab.active .x { opacity: 1; }
-.tab .x svg { width: 14px; height: 14px; }
+.tab .x svg, .tab .rs svg { width: 14px; height: 14px; }
+.tab .rs { width: 24px; height: 24px; display: none; color: var(--accent); }
+.tab.away .rs { display: inline-grid; }
+:root[data-mode="rail"] .tab .rs { display: none; }
+#pinbtn { width: 26px; height: 26px; margin-right: -4px; opacity: 0; transition: opacity .12s var(--ease), background-color .12s var(--ease), color .12s var(--ease); }
+#urlbar:hover #pinbtn, #pinbtn.on { opacity: 1; }
+#pinbtn.on { color: var(--accent); }
+#urlbar.focus #pinbtn { display: none; }
+@media (hover: none) { #pinbtn { opacity: 1; } }
 .tab.split-a { border-bottom-left-radius: 2px; border-bottom-right-radius: 2px; }
 .tab.split-b { border-top-left-radius: 2px; border-top-right-radius: 2px; margin-top: 1px; }
 .tab.split-a::before, .tab.split-b::before { content: ""; position: absolute; left: 3px; width: 2px; border-radius: 1px; background: var(--accent); opacity: .8; }
@@ -242,6 +268,11 @@ kbd { font: 11px var(--font); padding: 1px 5px; border-radius: 4px; background: 
 .btn.ghost { background: var(--hover); color: var(--fg); }
 .btn.danger { background: transparent; color: #d0566a; }
 .btn.danger:hover { background: rgba(208, 86, 106, .1); color: #d0566a; }
+.keybtn { padding: 3px 6px; border-radius: 7px; gap: 3px; display: inline-flex; align-items: center; color: var(--fg); min-height: 26px; }
+.keybtn:hover { background: var(--hover); }
+.keybtn.rec { box-shadow: 0 0 0 1.5px var(--accent); color: var(--accent); font-size: 12px; padding: 3px 10px; }
+.keyfixed { display: inline-flex; gap: 3px; align-items: center; color: var(--muted); font-size: 12px; }
+.unbound { color: var(--faint); font-size: 12px; }
 .keys { display: grid; grid-template-columns: 1fr auto; gap: 7px 10px; padding: 10px 12px; font-size: 12px; }
 .keys span:nth-child(odd) { color: var(--muted); }
 .icongrid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; padding: 8px; }
@@ -266,9 +297,11 @@ kbd { font: 11px var(--font); padding: 1px 5px; border-radius: 4px; background: 
     <button class="nav" id="reload" title="Reload (Ctrl+R)"></button>
   </div>
   <div id="urlwrap">
-    <div id="urlbar"><span id="urlicon"></span><input id="url" spellcheck="false" placeholder="Search or enter address"></div>
+    <div id="urlbar"><span id="urlicon"></span><input id="url" spellcheck="false" placeholder="Search or enter address"><button id="pinbtn" title="Pin this site"></button></div>
     <div id="suggest"></div>
   </div>
+  <div id="exts"></div>
+  <div id="storebar"><span class="txt">Chrome Web Store</span><button class="btn" id="storeadd">Add to oxygen</button></div>
   <div id="essentials"></div>
   <div id="wshead"><span id="wsicon"></span><span class="name"></span><button id="wsmore" title="Workspace options"></button></div>
   <div id="scroll">
@@ -302,6 +335,7 @@ kbd { font: 11px var(--font); padding: 1px 5px; border-radius: 4px; background: 
           <option value="system">Segoe UI Variable</option><option value="jetbrains">JetBrains Mono</option><option value="segoe">Segoe UI</option>
           <option value="cascadia">Cascadia Code</option><option value="consolas">Consolas</option><option value="georgia">Georgia</option><option value="verdana">Verdana</option>
         </select></div>
+        <div class="row"><div class="lbl">Use this font on websites<small>Page text uses your interface font; icons and code keep theirs</small></div><span class="switch" id="s_sitefont"></span></div>
         <div class="row"><div class="lbl">Force dark mode on websites<small>Darkens sites that have no dark theme</small></div><span class="switch" id="s_forcedark"></span></div>
         <div class="row"><div class="lbl">Compact mode<small>Hide the sidebar; hover the left edge to show it</small></div><span class="switch" id="s_compact"></span></div>
       </div>
@@ -309,24 +343,28 @@ kbd { font: 11px var(--font); padding: 1px 5px; border-radius: 4px; background: 
       </div>
       <div class="group"><h3>Browsing</h3><div class="card">
         <div class="row"><div class="lbl">Search engine</div><select id="s_engine"><option value="duckduckgo">DuckDuckGo</option><option value="google">Google</option><option value="bing">Bing</option><option value="brave">Brave Search</option><option value="startpage">Startpage</option></select></div>
+        <div class="row"><div class="lbl">Search suggestions<small>Ask the search engine for suggestions while you type</small></div><span class="switch" id="s_suggest"></span></div>
+        <div class="row"><div class="lbl">Save passwords and fill forms<small>Chromium's password manager and autofill</small></div><span class="switch" id="s_passwords"></span></div>
         <div class="row"><div class="lbl">Block ads and trackers<small>Applies to tabs loaded after the change</small></div><span class="switch" id="s_ads"></span></div>
       </div></div>
-      <div class="group"><h3>Keyboard shortcuts</h3><div class="card"><div class="keys">
-        <span>New tab</span><span><kbd>Ctrl</kbd> <kbd>T</kbd></span>
-        <span>Address bar</span><span><kbd>Ctrl</kbd> <kbd>L</kbd></span>
-        <span>Close tab</span><span><kbd>Ctrl</kbd> <kbd>W</kbd></span>
-        <span>Reopen closed tab</span><span><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>T</kbd></span>
-        <span>Next / previous tab</span><span><kbd>Ctrl</kbd> <kbd>Tab</kbd></span>
-        <span>Jump to tab</span><span><kbd>Ctrl</kbd> <kbd>1</kbd>–<kbd>9</kbd></span>
-        <span>Switch workspace</span><span><kbd>Ctrl</kbd> <kbd>Alt</kbd> <kbd>←</kbd> <kbd>→</kbd></span>
-        <span>Collapse sidebar</span><span><kbd>Ctrl</kbd> <kbd>Alt</kbd> <kbd>S</kbd></span>
-        <span>Compact mode</span><span><kbd>Ctrl</kbd> <kbd>Alt</kbd> <kbd>C</kbd></span>
-        <span>Split view</span><span><kbd>Ctrl</kbd> <kbd>Alt</kbd> <kbd>V</kbd></span>
-        <span>Add to Essentials</span><span><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>E</kbd></span>
-        <span>Glance at a link</span><span><kbd>Alt</kbd> + click</span>
-        <span>Full screen</span><span><kbd>F11</kbd></span>
-      </div></div></div>
-    </div>
+      <div class="group"><h3>Privacy</h3><div class="card">
+        <div class="row"><div class="lbl">History<small>Pages you visited</small></div><button class="btn ghost" data-clear="history">Clear</button></div>
+        <div class="row"><div class="lbl">Search history<small>Searches remembered by the address bar</small></div><button class="btn ghost" data-clear="searches">Clear</button></div>
+        <div class="row"><div class="lbl">Cached files<small>Speeds up revisiting pages</small></div><button class="btn ghost" data-clear="cache">Clear</button></div>
+        <div class="row"><div class="lbl">Cookies and site data<small>Signs you out of most sites</small></div><button class="btn ghost" data-clear="cookies">Clear</button></div>
+        <div class="row" id="s_privacyrow"><div class="lbl"><small id="s_privacy"></small></div></div>
+      </div></div>
+      <div class="group ext-only"><h3>Extensions</h3><div class="card">
+        <div id="s_extlist"></div>
+        <div class="row"><input id="s_extinput" type="text" placeholder="Paste a Chrome Web Store link" style="flex:1;min-width:0"><button class="btn" id="s_extinstall">Install</button></div>
+        <div class="row"><div class="lbl"><small id="s_extstatus">Or open an extension's page on the Chrome Web Store and click Add to oxygen.</small></div><button class="btn ghost" id="s_extfolder" title="For unpacked extensions; restart oxygen after adding one">Folder</button></div>
+      </div></div>
+      <div class="group"><h3>Keyboard shortcuts</h3><div class="card">
+        <div id="s_keys"></div>
+        <div class="row"><div class="lbl">Jump to tab</div><span class="keyfixed"></span></div>
+        <div class="row"><div class="lbl">Glance at a link</div><span class="keyfixed glancekey"></span></div>
+        <div class="row"><div class="lbl"><small>Click a shortcut, then press the new keys. Backspace clears it, Esc cancels.</small></div><button class="btn ghost" id="s_keysreset">Reset all</button></div>
+      </div></div>    </div>
   </div>
 
   <div class="panel" id="wsedit">
@@ -372,6 +410,8 @@ const P = {
   trash: '<path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>',
   tab: '<rect width="20" height="16" x="2" y="4" rx="2"/><path d="M2 9h20"/>',
   clock: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
+  undo: '<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>',
+  pinoff: '<path d="M12 17v5"/><path d="M15 9.34V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H7.89"/><path d="m2 2 20 20"/><path d="M9 9v1.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h11"/>',
   // Workspace icons
   home: '<path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"/><path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
   briefcase: '<path d="M16 20V4a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/><rect width="20" height="14" x="2" y="6" rx="2"/>',
@@ -405,6 +445,7 @@ if (IOS) {
 }
 
 let S = null, prevWs = null, prevWsIndex = 0, newTabMode = false, dragId = null, history = [], sugg = [], suggSel = 0, editingWs = null;
+let searches = [], live = { q: '', list: [] }, suggestTimer = null;
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 function hostOf(u) { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return ''; } }
 function originOf(u) { try { const x = new URL(u); return /^https?:$/.test(x.protocol) ? x.origin : ''; } catch { return ''; } }
@@ -455,12 +496,12 @@ function makeTab() {
   const el = document.createElement('div');
   el.className = 'tab';
   el.draggable = true;
-  el.innerHTML = `<span class="fav"></span><span class="title"></span><button class="x" title="Close tab">${icon('x')}</button>`;
+  el.innerHTML = `<span class="fav"></span><span class="title"></span><button class="rs" title="Go back to the pinned page">${icon('undo')}</button><button class="x" title="Close tab">${icon('x')}</button>`;
   return el;
 }
 function updateTab(el, t) {
   el.dataset.id = t.id;
-  el.className = ['tab', t.active && 'active', !t.loaded && 'unloaded', t.splitPos && 'split-' + t.splitPos].filter(Boolean).join(' ');
+  el.className = ['tab', t.active && 'active', !t.loaded && 'unloaded', t.away && 'away', t.splitPos && 'split-' + t.splitPos].filter(Boolean).join(' ');
   const title = t.title || hostOf(t.url) || 'New Tab';
   const tt = el.querySelector('.title');
   if (tt.textContent !== title) tt.textContent = title;
@@ -552,11 +593,41 @@ function draw() {
     el.title = w.name;
     if (el.dataset.icon !== w.icon) { el.dataset.icon = w.icon; el.innerHTML = icon(w.icon); }
   }, false);
+  drawExtensions();
   if ($('settings').classList.contains('open')) fillSettings();
+  if (!recording) drawKeys();
   mem(s.mem, s.settings.memory_budget_mb);
 }
 
+function extIcon(e) {
+  return e.icon ? `<img class="exticon" src="${esc(e.icon)}" alt="">` : icon('sparkle');
+}
+function drawExtensions() {
+  const s = S;
+  root.dataset.ext = s.extSupported ? 'on' : 'off';
+  if (!s.extSupported) return;
+  const list = s.extensions || [];
+  reconcile($('exts'), list.filter((e) => e.enabled).map((e) => ({ ...e, key: e.id })), () => document.createElement('button'), (el, e) => {
+    el.dataset.ext = e.id;
+    el.title = e.name;
+    el.className = s.extPopup === e.id ? 'open' : '';
+    const k = e.icon.length + e.name;
+    if (el.dataset.k !== k) { el.dataset.k = k; el.innerHTML = extIcon(e); }
+  }, false);
+  $('storebar').classList.toggle('show', !!s.storeId && !s.storeInstalled);
+  $('s_extlist').innerHTML = list.map((e) => `<div class="row extrow"><div class="lbl">${extIcon(e)}<span>${esc(e.name)}</span></div>
+    <span class="switch ${e.enabled ? 'on' : ''}" data-exttoggle="${esc(e.id)}"></span>
+    <button class="rm" data-extremove="${esc(e.id)}" title="Remove">${icon('trash')}</button></div>`).join('');
+  $('s_extstatus').textContent = s.extStatus || 'Or open an extension\'s page on the Chrome Web Store and click Add to oxygen.';
+}
+
 function showUrl() {
+  const cur = currentTab();
+  const pinned = !!cur && (cur.pinned || cur.essential);
+  $('pinbtn').style.display = cur ? '' : 'none';
+  $('pinbtn').classList.toggle('on', pinned);
+  $('pinbtn').innerHTML = icon(pinned ? 'pin' : 'pin');
+  $('pinbtn').title = cur && cur.essential ? 'Remove from Essentials' : pinned ? 'Unpin this site' : 'Pin this site';
   const u = S.activeUrl || '';
   const secure = u.startsWith('https://');
   $('urlicon').innerHTML = icon(u ? (secure ? 'lock' : 'globe') : 'search');
@@ -572,7 +643,8 @@ function mem(used, budget) {
 window.zl = {
   render(s) { S = s; draw(); },
   mem(used, budget) { if (S) { S.mem = used; mem(used, budget); } },
-  history(list) { history = list; if (document.activeElement === $('url')) suggest(); },
+  history(list, past) { history = list; searches = past || []; if (document.activeElement === $('url')) suggest(); },
+  suggestions(q, list) { live = { q, list }; if (document.activeElement === $('url') && $('url').value.trim() === q) suggest(); },
   focusUrl(nt) { newTabMode = nt; if (document.activeElement === $('url')) { $('url').value = nt ? '' : (S.activeUrl || ''); suggest(); } else $('url').focus(); },
 };
 
@@ -597,7 +669,14 @@ $('url').addEventListener('blur', () => {
     if (S && S.mode === 'peek') post({ t: 'peek', on: false });
   }, 120);
 });
-$('url').addEventListener('input', () => { suggSel = 0; suggest(); });
+$('url').addEventListener('input', () => {
+  suggSel = 0;
+  suggest();
+  // Ask the search engine for live suggestions once typing pauses.
+  clearTimeout(suggestTimer);
+  const q = $('url').value.trim();
+  if (q && S.settings.search_suggestions && !looksLikeUrl(q)) suggestTimer = setTimeout(() => post({ t: 'suggest', q }), 140);
+});
 function suggest() {
   if (!S) return;
   const q = $('url').value.trim();
@@ -606,6 +685,24 @@ function suggest() {
   if (q && !(q === S.activeUrl && !newTabMode)) {
     if (looksLikeUrl(q)) sugg.push({ kind: 'go', input: q, title: q, icon: 'globe' });
     sugg.push({ kind: 'go', input: q, title: q, sub: `Search with ${engineName()}`, icon: 'search' });
+    // Searches you made before, then the engine's live suggestions.
+    const seenQ = new Set([ql]);
+    for (const p of searches) {
+      if (sugg.length >= 4) break;
+      const pl = p.toLowerCase();
+      if (!pl.startsWith(ql) || seenQ.has(pl)) continue;
+      seenQ.add(pl);
+      sugg.push({ kind: 'go', input: p, title: p, icon: 'clock', tag: 'Searched before' });
+    }
+    if (live.q && ql.startsWith(live.q.toLowerCase().slice(0, Math.max(1, ql.length - 2)))) {
+      for (const p of live.list) {
+        if (sugg.length >= 7) break;
+        const pl = p.toLowerCase();
+        if (seenQ.has(pl)) continue;
+        seenQ.add(pl);
+        sugg.push({ kind: 'go', input: p, title: p, icon: 'search' });
+      }
+    }
     const open = [...S.essentials, ...S.pinned, ...S.tabs].filter((t) => (t.title + ' ' + t.url).toLowerCase().includes(ql) && t.id !== S.activeId).slice(0, 3);
     for (const t of open) sugg.push({ kind: 'tab', id: t.id, title: t.title || t.url, url: t.url, tag: 'Switch to tab', icon: 'tab' });
     const seen = new Set(open.map((t) => t.url));
@@ -616,7 +713,8 @@ function suggest() {
       sugg.push({ kind: 'url', input: h.url, title: h.title || h.url, url: h.url, icon: 'clock' });
     }
   } else if (!q || newTabMode) {
-    for (const h of history.slice(0, 7)) sugg.push({ kind: 'url', input: h.url, title: h.title || h.url, url: h.url, icon: 'clock' });
+    for (const p of searches.slice(0, 3)) sugg.push({ kind: 'go', input: p, title: p, icon: 'search', tag: 'Recent search' });
+    for (const h of history.slice(0, 6)) sugg.push({ kind: 'url', input: h.url, title: h.title || h.url, url: h.url, icon: 'clock' });
   }
   suggSel = Math.min(suggSel, Math.max(0, sugg.length - 1));
   const box = $('suggest');
@@ -655,6 +753,15 @@ $('suggest').addEventListener('mousemove', (e) => {
   if (row && +row.dataset.i !== suggSel) { suggSel = +row.dataset.i; document.querySelectorAll('.sg').forEach((el) => el.classList.toggle('sel', +el.dataset.i === suggSel)); }
 });
 
+// Pin button in the address bar: pins or unpins the current site.
+$('pinbtn').addEventListener('mousedown', (e) => e.preventDefault());
+$('pinbtn').onclick = (e) => {
+  e.stopPropagation();
+  const t = currentTab();
+  if (!t) return;
+  post(t.essential ? { t: 'essential', id: t.id } : { t: 'pin', id: t.id });
+};
+function currentTab() { return S ? [...S.essentials, ...S.pinned, ...S.tabs].find((x) => x.id === S.activeId) : null; }
 $('back').onclick = () => post({ t: 'back' });
 $('fwd').onclick = () => post({ t: 'forward' });
 $('reload').onclick = () => post({ t: 'reload' });
@@ -671,8 +778,34 @@ let wheelAt = 0;
 $('footer').addEventListener('wheel', (e) => {
   if (Math.abs(e.deltaY) < 20 || Date.now() - wheelAt < 250) return;
   wheelAt = Date.now();
-  post({ t: 'key', k: e.deltaY > 0 ? 'ctrl+alt+arrowright' : 'ctrl+alt+arrowleft' });
+  post({ t: 'action', id: e.deltaY > 0 ? 'next_workspace' : 'prev_workspace' });
 }, { passive: true });
+
+// Extensions
+$('exts').addEventListener('click', (e) => { const b = e.target.closest('[data-ext]'); if (b) post({ t: 'extPopup', ext: b.dataset.ext }); });
+$('exts').addEventListener('contextmenu', (e) => {
+  const b = e.target.closest('[data-ext]');
+  if (!b) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const ext = b.dataset.ext;
+  menu(e, [
+    ['moon', 'Turn off', () => post({ t: 'extToggle', ext, on: false })],
+    ['settings', 'Manage extensions', () => { fillSettings(); $('settings').classList.add('open'); }],
+    '-',
+    ['trash', 'Remove', () => post({ t: 'extRemove', ext }), 'danger'],
+  ]);
+});
+$('storeadd').onclick = () => post({ t: 'extInstall', input: S.activeUrl });
+$('s_extinstall').onclick = () => { const v = $('s_extinput').value.trim(); if (v) { post({ t: 'extInstall', input: v }); $('s_extinput').value = ''; } };
+$('s_extinput').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('s_extinstall').click(); });
+$('s_extfolder').onclick = () => post({ t: 'extFolder' });
+$('s_extlist').addEventListener('click', (e) => {
+  const tg = e.target.closest('[data-exttoggle]');
+  if (tg) { post({ t: 'extToggle', ext: tg.dataset.exttoggle, on: !tg.classList.contains('on') }); return; }
+  const rm = e.target.closest('[data-extremove]');
+  if (rm) post({ t: 'extRemove', ext: rm.dataset.extremove });
+});
 
 function wsMenu(e, id) {
   menu(e, [
@@ -686,6 +819,7 @@ document.addEventListener('click', (e) => {
   if (!e.target.closest('#menu')) hideMenu();
   const x = e.target.closest('.x');
   const t = e.target.closest('[data-id]');
+  if (e.target.closest('.rs') && t) { e.stopPropagation(); post({ t: 'resetPin', id: +t.dataset.id }); return; }
   if (x && t) { e.stopPropagation(); post({ t: 'close', id: +t.dataset.id }); return; }
   if (t && !e.target.closest('#suggest')) post({ t: 'select', id: +t.dataset.id });
 });
@@ -705,6 +839,8 @@ document.addEventListener('contextmenu', (e) => {
   menu(e, [
     ['star', t.essential ? 'Remove from Essentials' : 'Add to Essentials', () => post({ t: 'essential', id })],
     !t.essential && ['pin', t.pinned ? 'Unpin tab' : 'Pin tab', () => post({ t: 'pin', id })],
+    t.away && ['undo', 'Go back to pinned page', () => post({ t: 'resetPin', id })],
+    t.away && ['pin', 'Make this the pinned page', () => post({ t: 'setPinUrl', id })],
     S.activeId && S.activeId !== id && !inSplit && ['split', 'Split view with current tab', () => post({ t: 'split', id })],
     inSplit && ['split', 'Close split view', () => post({ t: 'unsplit' })],
     '-',
@@ -775,6 +911,11 @@ function fillSettings() {
   $('s_ads').classList.toggle('on', st.block_ads);
   $('s_compact').classList.toggle('on', st.compact);
   $('s_forcedark').classList.toggle('on', st.force_dark);
+  $('s_sitefont').classList.toggle('on', !!st.font_on_sites);
+  $('s_suggest').classList.toggle('on', st.search_suggestions !== false);
+  $('s_passwords').classList.toggle('on', st.save_passwords !== false);
+  $('s_privacy').textContent = S.privacyStatus || '';
+  $('s_privacyrow').style.display = S.privacyStatus ? '' : 'none';
   $('s_restart').classList.toggle('show', !!S.restartNeeded);
 }
 function saveSettings(patch) { post({ t: 'settings', settings: { ...S.settings, ...patch } }); }
@@ -789,6 +930,10 @@ $('s_idle').onchange = (e) => saveSettings({ unload_after_mins: Math.max(1, +e.t
 $('s_ads').onclick = () => saveSettings({ block_ads: !S.settings.block_ads });
 $('s_compact').onclick = () => saveSettings({ compact: !S.settings.compact });
 $('s_forcedark').onclick = () => saveSettings({ force_dark: !S.settings.force_dark });
+$('s_sitefont').onclick = () => saveSettings({ font_on_sites: !S.settings.font_on_sites });
+$('s_suggest').onclick = () => saveSettings({ search_suggestions: S.settings.search_suggestions === false });
+$('s_passwords').onclick = () => saveSettings({ save_passwords: S.settings.save_passwords === false });
+document.querySelectorAll('[data-clear]').forEach((b) => { b.onclick = () => post({ t: 'clearData', kind: b.dataset.clear }); });
 $('s_restartbtn').onclick = () => post({ t: 'restart' });
 
 // Workspace editor
@@ -834,19 +979,75 @@ root.addEventListener('mouseleave', () => {
 });
 root.addEventListener('mouseenter', () => clearTimeout(leaveTimer));
 
-// Shortcuts while the sidebar has focus
-addEventListener('keydown', (e) => {
+// Keyboard shortcuts: the same combo format as the page script and Rust.
+function comboOf(e) {
   const k = e.key.toLowerCase();
-  const combo = (e.ctrlKey || e.metaKey ? 'ctrl+' : '') + (e.altKey ? 'alt+' : '') + (e.shiftKey ? 'shift+' : '') + k;
-  if (combo === 'ctrl+t') { e.preventDefault(); zl.focusUrl(true); return; }
-  if (combo === 'ctrl+l') { e.preventDefault(); zl.focusUrl(false); return; }
-  if (e.target.matches('input, select') && !e.ctrlKey && !e.altKey) return;
-  if (k === 'escape') { hideMenu(); if (document.querySelector('.panel.open')) { $('settings').classList.remove('open'); closeWsEditor(); return; } }
-  const fwd = ['ctrl+w', 'ctrl+shift+t', 'ctrl+tab', 'ctrl+shift+tab', 'ctrl+alt+c', 'ctrl+alt+v', 'ctrl+alt+arrowleft', 'ctrl+alt+s',
-    'ctrl+alt+arrowright', 'ctrl+shift+e', 'f11', 'escape', 'ctrl+r', 'f5', 'alt+arrowleft', 'alt+arrowright'];
-  if (fwd.includes(combo) || /^ctrl\+[1-9]$/.test(combo)) { e.preventDefault(); post({ t: 'key', k: combo }); }
-});
+  if (['control', 'alt', 'shift', 'meta'].includes(k)) return '';
+  return (e.ctrlKey || e.metaKey ? 'ctrl+' : '') + (e.altKey ? 'alt+' : '') + (e.shiftKey ? 'shift+' : '') + (k === ' ' ? 'space' : k);
+}
+const KEY_NAMES = { arrowleft: '←', arrowright: '→', arrowup: '↑', arrowdown: '↓', space: 'Space', tab: 'Tab', escape: 'Esc',
+  enter: 'Enter', backspace: 'Backspace', delete: 'Del', pageup: 'PgUp', pagedown: 'PgDn', home: 'Home', end: 'End' };
+function keyLabel(combo) {
+  if (!combo) return '<span class="unbound">None</span>';
+  return combo.split('+').map((p) => {
+    let name = { ctrl: IOS ? '⌘' : 'Ctrl', alt: IOS ? '⌥' : 'Alt', shift: IOS ? '⇧' : 'Shift' }[p] || KEY_NAMES[p] || (p.length === 1 ? p.toUpperCase() : p.toUpperCase());
+    return `<kbd>${esc(name)}</kbd>`;
+  }).join(' ');
+}
+function actionFor(combo) {
+  const a = (Array.isArray(S && S.keyActions) ? S.keyActions : []).find((x) => x.combo === combo);
+  return a ? a.id : null;
+}
+document.querySelector('.keyfixed:not(.glancekey)').innerHTML = keyLabel('ctrl+1') + ' – <kbd>9</kbd>';
+document.querySelector('.glancekey').innerHTML = IOS ? 'Long-press, then Glance' : keyLabel('alt') + ' + click';
 
+let recording = null;
+function drawKeys() {
+  const list = Array.isArray(S && S.keyActions) ? S.keyActions : [];
+  $('s_keys').innerHTML = list.map((a) => `<div class="row"><div class="lbl">${esc(a.label)}</div>
+    <button class="keybtn ${recording === a.id ? 'rec' : ''}" data-action="${a.id}">${recording === a.id ? 'Press keys…' : keyLabel(a.combo)}</button></div>`).join('');
+}
+function saveKeybind(id, combo) {
+  const binds = { ...(S.settings.keybinds || {}) };
+  // A combo can only do one thing: unbind whatever had it before.
+  for (const a of S.keyActions) if (a.id !== id && a.combo === combo && combo) binds[a.id] = '';
+  binds[id] = combo;
+  saveSettings({ keybinds: binds });
+}
+$('s_keys').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-action]');
+  if (!b) return;
+  recording = recording === b.dataset.action ? null : b.dataset.action;
+  drawKeys();
+});
+$('s_keysreset').onclick = () => { recording = null; saveSettings({ keybinds: {} }); };
+
+// Shortcuts while the sidebar has focus.
+addEventListener('keydown', (e) => {
+  if (recording) {
+    e.preventDefault();
+    e.stopPropagation();
+    const k = e.key.toLowerCase();
+    if (k === 'escape') { recording = null; drawKeys(); return; }
+    if (k === 'backspace' || k === 'delete') { const id = recording; recording = null; saveKeybind(id, ''); return; }
+    const combo = comboOf(e);
+    // Shortcuts need a modifier, unless they use a function key.
+    if (!combo || (!/^(ctrl|alt)\+/.test(combo) && !/^(shift\+)?f\d{1,2}$/.test(combo))) return;
+    const id = recording;
+    recording = null;
+    saveKeybind(id, combo);
+    return;
+  }
+  const combo = comboOf(e);
+  if (!combo) return;
+  const k = e.key.toLowerCase();
+  const action = actionFor(combo);
+  if (action === 'new_tab') { e.preventDefault(); zl.focusUrl(true); return; }
+  if (action === 'focus_address') { e.preventDefault(); zl.focusUrl(false); return; }
+  if (e.target.matches('input, select') && !e.ctrlKey && !e.altKey && !e.metaKey) return;
+  if (k === 'escape') { hideMenu(); if (document.querySelector('.panel.open')) { $('settings').classList.remove('open'); closeWsEditor(); return; } }
+  if (action || k === 'escape' || k === 'f5' || /^ctrl\+[1-9]$/.test(combo)) { e.preventDefault(); post({ t: 'key', k: combo }); }
+});
 // Touch: long-press opens the same menu as right-click; swiping the
 // workspace bar switches workspace (the touch version of scrolling it).
 if (IOS) {
@@ -878,7 +1079,7 @@ if (IOS) {
     if (!swipe || !p) return;
     const dx = p.clientX - swipe.x, dy = p.clientY - swipe.y;
     swipe = null;
-    if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) post({ t: 'key', k: dx < 0 ? 'ctrl+alt+arrowright' : 'ctrl+alt+arrowleft' });
+    if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) post({ t: 'action', id: dx < 0 ? 'next_workspace' : 'prev_workspace' });
   }, { passive: true });
 }
 

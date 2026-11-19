@@ -54,6 +54,91 @@ pub fn raise(_view: &wry::WebView) {
     }
 }
 
+/// Removes the rounded corners (used while a video is full screen).
+pub fn square_corners(_view: &wry::WebView) {
+    #[cfg(windows)]
+    unsafe {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::Graphics::Gdi::SetWindowRgn;
+        use wry::WebViewExtWindows;
+        let _ = SetWindowRgn(HWND(_view.hwnd().0), None, true);
+    }
+}
+
+/// Chromium's password saving and form autofill for a page.
+pub fn set_autofill(_view: &wry::WebView, _save_passwords: bool) {
+    #[cfg(windows)]
+    unsafe {
+        use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings4;
+        use windows::core::Interface;
+        use wry::WebViewExtWindows;
+        if let Ok(settings) = _view.webview().Settings() {
+            if let Ok(s4) = settings.cast::<ICoreWebView2Settings4>() {
+                let _ = s4.SetIsPasswordAutosaveEnabled(_save_passwords);
+                let _ = s4.SetIsGeneralAutofillEnabled(_save_passwords);
+            }
+        }
+    }
+}
+
+/// Calls `changed(true/false)` when the page enters or leaves HTML full screen
+/// (a video's full-screen button). WebView2 leaves resizing to the app.
+pub fn on_page_fullscreen(_view: &wry::WebView, _changed: impl Fn(bool) + 'static) {
+    #[cfg(windows)]
+    unsafe {
+        use webview2_com::ContainsFullScreenElementChangedEventHandler;
+        use wry::WebViewExtWindows;
+        let handler = ContainsFullScreenElementChangedEventHandler::create(Box::new(move |sender, _| {
+            if let Some(sender) = sender {
+                let mut full = windows::core::BOOL::default();
+                let _ = sender.ContainsFullScreenElement(&mut full);
+                _changed(full.as_bool());
+            }
+            Ok(())
+        }));
+        let mut token = Default::default();
+        let _ = _view.webview().add_ContainsFullScreenElementChanged(&handler, &mut token);
+    }
+}
+
+/// What to clear from the profile.
+pub enum ClearKind {
+    Cache,
+    CookiesAndSiteData,
+    History,
+}
+
+/// Clears browsing data for the whole profile, then calls `done`.
+pub fn clear_browsing_data(_view: &wry::WebView, _kind: ClearKind, done: impl FnOnce() + 'static) {
+    #[cfg(windows)]
+    unsafe {
+        use webview2_com::ClearBrowsingDataCompletedHandler;
+        use webview2_com::Microsoft::Web::WebView2::Win32::*;
+        use windows::core::Interface;
+        use wry::WebViewExtWindows;
+        let kinds = match _kind {
+            ClearKind::Cache => COREWEBVIEW2_BROWSING_DATA_KINDS_DISK_CACHE,
+            ClearKind::CookiesAndSiteData => COREWEBVIEW2_BROWSING_DATA_KINDS_ALL_SITE,
+            ClearKind::History => COREWEBVIEW2_BROWSING_DATA_KINDS_BROWSING_HISTORY,
+        };
+        let profile = _view
+            .webview()
+            .cast::<ICoreWebView2_13>()
+            .and_then(|w| w.Profile())
+            .and_then(|p| p.cast::<ICoreWebView2Profile2>());
+        if let Ok(profile) = profile {
+            let handler = ClearBrowsingDataCompletedHandler::create(Box::new(move |_| {
+                done();
+                Ok(())
+            }));
+            let _ = profile.ClearBrowsingData(kinds, &handler);
+            return;
+        }
+    }
+    #[allow(unreachable_code)]
+    done();
+}
+
 /// Whether the floating sidebar can overlap the page. Elsewhere it pushes the
 /// page aside instead.
 pub const CAN_OVERLAY: bool = cfg!(windows);
@@ -63,13 +148,19 @@ pub const CAN_OVERLAY: bool = cfg!(windows);
 pub fn claim_single_instance(_restarted: bool) -> bool {
     #[cfg(windows)]
     unsafe {
-        use windows::core::w;
+        use std::hash::{Hash, Hasher};
+        use windows::core::HSTRING;
         use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS};
         use windows::Win32::System::Threading::CreateMutexW;
+        // One instance per profile folder, so a separate test profile can run
+        // alongside the normal one.
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        crate::session::data_dir().hash(&mut hasher);
+        let name = HSTRING::from(format!("Local\\oxygen-browser-{:x}", hasher.finish()));
         // After a restart the old process may still be exiting, so wait for it.
         let attempts = if _restarted { 60 } else { 1 };
         for _ in 0..attempts {
-            let Ok(handle) = CreateMutexW(None, false, w!("Local\\oxygen-browser-single-instance")) else { return true };
+            let Ok(handle) = CreateMutexW(None, false, &name) else { return true };
             if GetLastError() != ERROR_ALREADY_EXISTS {
                 // The handle stays open for the life of the process.
                 return true;

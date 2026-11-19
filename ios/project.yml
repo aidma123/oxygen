@@ -21,6 +21,8 @@ targets:
         buildPhase: resources
       - path: ../desktop/src/glance.js
         buildPhase: resources
+      - path: ../desktop/src/keybinds.json
+        buildPhase: resources
       - path: ../desktop/assets/fonts/JetBrainsMono-latin.woff2
         buildPhase: resources
     scheme: {}

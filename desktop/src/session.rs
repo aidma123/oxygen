@@ -29,6 +29,9 @@ pub struct SavedTab {
     pub pinned: bool,
     #[serde(default)]
     pub essential: bool,
+    /// The page a pinned tab or Essential was pinned on.
+    #[serde(default)]
+    pub pinned_url: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq)]
@@ -52,8 +55,17 @@ pub struct Settings {
     pub theme: String,
     /// Interface font id (see ui.html).
     pub font: String,
+    /// Also use the interface font on websites.
+    pub font_on_sites: bool,
+    /// Show live search suggestions from the search engine while typing.
+    pub search_suggestions: bool,
+    /// Offer to save passwords and fill forms (Chromium's own autofill).
+    pub save_passwords: bool,
     /// Force websites into a dark theme. Takes effect on the next start.
     pub force_dark: bool,
+    /// Custom shortcuts: action id -> key combo ("" = unbound). Actions not
+    /// listed use their default from keybinds.json.
+    pub keybinds: std::collections::BTreeMap<String, String>,
 }
 
 impl Default for Settings {
@@ -69,7 +81,11 @@ impl Default for Settings {
             sidebar_width: 248.0,
             theme: "system".into(),
             font: "system".into(),
+            font_on_sites: false,
+            search_suggestions: true,
+            save_passwords: true,
             force_dark: false,
+            keybinds: Default::default(),
         }
     }
 }
@@ -167,4 +183,12 @@ pub fn load_history() -> Vec<HistoryEntry> {
 
 pub fn save_history(h: &[HistoryEntry]) {
     write_json("history.json", &h);
+}
+
+pub fn load_searches() -> Vec<crate::search::SearchEntry> {
+    read_json(&data_dir().join("searches.json"))
+}
+
+pub fn save_searches(s: &[crate::search::SearchEntry]) {
+    write_json("searches.json", &s);
 }

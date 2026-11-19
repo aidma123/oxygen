@@ -36,6 +36,10 @@ final class BrowserStore: NSObject, ObservableObject {
     @Published private(set) var thumbnails: [UUID: Data] = [:]
     /// Visited pages, for address bar suggestions.
     @Published private(set) var history: [HistoryEntry] = []
+    /// Searches typed into the address bar, most recent first.
+    @Published private(set) var searches: [String] = []
+    @Published var privacyStatus = ""
+    private var searchesDirty = false
 
     private var webViews: [UUID: WKWebView] = [:]
     private var historyDirty = false
@@ -81,6 +85,7 @@ final class BrowserStore: NSObject, ObservableObject {
             activeWorkspace = home.id
         }
         history = Persistence.loadHistory()
+        searches = Persistence.loadSearches()
         AppFont.current = settings.font
 
         ContentBlocker.load { [weak self] list in
@@ -179,21 +184,21 @@ final class BrowserStore: NSObject, ObservableObject {
     }
 
     func makeWebView(script: String, onMessage: ((String) -> Void)?) -> WKWebView {
+        makeWebView(script: script) { body, _ in onMessage?(body) }
+    }
+
+    func makeWebView(script: String, onMessage: @escaping (String, WKWebView?) -> Void) -> WKWebView {
         let config = WKWebViewConfiguration()
         let ucc = config.userContentController
-        ucc.addUserScript(WKUserScript(source: Shared.bridgeJS, injectionTime: .atDocumentStart, forMainFrameOnly: true))
-        ucc.addUserScript(WKUserScript(source: script, injectionTime: .atDocumentStart, forMainFrameOnly: true))
-        ucc.add(ScriptMessageProxy { body in
-            Task { @MainActor in onMessage?(body) }
-        }, name: "ipc")
+        installScripts(ucc, page: script)
+        ucc.add(ScriptMessageProxy(withSender: { body, sender in
+            Task { @MainActor in onMessage(body, sender) }
+        }), name: "ipc")
         config.allowsInlineMediaPlayback = true
         // Media waits for a tap: autoplaying video is a big memory and battery cost.
         config.mediaTypesRequiringUserActionForPlayback = .all
         if settings.blockAds, let list = ruleList {
             config.userContentController.add(list)
-        }
-        if settings.forceDark {
-            config.userContentController.addUserScript(Self.forceDarkScript)
         }
         let view = WKWebView(frame: .zero, configuration: config)
         view.allowsBackForwardNavigationGestures = true
@@ -229,11 +234,29 @@ final class BrowserStore: NSObject, ObservableObject {
         })();
         """, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
 
+    /// Bridge, page setup (shortcuts, site font), the page script and forced
+    /// dark mode, in that order. Re-run when those settings change.
+    func installScripts(_ ucc: WKUserContentController, page: String) {
+        ucc.removeAllUserScripts()
+        ucc.addUserScript(WKUserScript(source: Shared.bridgeJS, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        ucc.addUserScript(WKUserScript(source: Shared.pageSetupScript(settings), injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        ucc.addUserScript(WKUserScript(source: page, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        if settings.forceDark { ucc.addUserScript(Self.forceDarkScript) }
+    }
+
     private func load(_ id: UUID) {
         guard webViews[id] == nil, let record = tab(id) else { return }
-        let view = makeWebView(script: Shared.contentJS) { [weak self] body in
-            self?.contentMessage(id, body)
+        let view = makeWebView(script: Shared.contentJS) { [weak self] body, sender in
+            // Route by the sending view: pop-ups share their opener's handler.
+            guard let self else { return }
+            self.contentMessage(sender.flatMap { self.webViewID($0) } ?? id, body)
         }
+        attach(id, view)
+        view.load(URLRequest(url: record.url))
+    }
+
+    /// Starts tracking a tab's web view (title, address, progress, history).
+    private func attach(_ id: UUID, _ view: WKWebView) {
         observers[id] = [
             view.observe(\.title, options: [.new]) { [weak self] wv, _ in
                 Task { @MainActor in
@@ -261,7 +284,6 @@ final class BrowserStore: NSObject, ObservableObject {
         ]
         webViews[id] = view
         loadedIDs.insert(id)
-        view.load(URLRequest(url: record.url))
     }
 
     func unload(_ id: UUID) {
@@ -422,11 +444,17 @@ final class BrowserStore: NSObject, ObservableObject {
         AppFont.current = settings.font
         if old.forceDark != settings.forceDark {
             for (id, view) in webViews {
-                let ucc = view.configuration.userContentController
-                ucc.removeAllUserScripts()
-                if settings.forceDark { ucc.addUserScript(Self.forceDarkScript) }
+                installScripts(view.configuration.userContentController, page: Shared.contentJS)
                 view.overrideUserInterfaceStyle = settings.forceDark ? .dark : .unspecified
                 if visibleIDs().contains(id) { view.reload() }
+            }
+        }
+        // Shortcuts and site font apply to open pages right away.
+        if old.keybinds != settings.keybinds || old.font != settings.font || old.fontOnSites != settings.fontOnSites {
+            let script = Shared.pageSetupScript(settings) + "window.__oxygenApplyFont&&__oxygenApplyFont();"
+            for view in webViews.values {
+                installScripts(view.configuration.userContentController, page: Shared.contentJS)
+                view.evaluateJavaScript(script)
             }
         }
         if old.blockAds != settings.blockAds, let list = ruleList {
@@ -472,6 +500,13 @@ final class BrowserStore: NSObject, ObservableObject {
 
     func go(_ input: String, newTab: Bool) {
         guard let url = AddressParser.url(from: input, engine: settings.searchEngine) else { return }
+        let q = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !AddressParser.isAddress(q) {
+            searches.removeAll { $0.caseInsensitiveCompare(q) == .orderedSame }
+            searches.insert(q, at: 0)
+            if searches.count > 500 { searches.removeLast(searches.count - 500) }
+            searchesDirty = true
+        }
         if newTab || activeTabID == nil {
             openTab(url, foreground: true)
         } else if let id = activeTabID {
@@ -555,8 +590,21 @@ final class BrowserStore: NSObject, ObservableObject {
             t.pinned = section == "pinned"
             t.workspaceID = activeWorkspace
         }
+        t.syncPin()
         let pos = before.flatMap { b in tabs.firstIndex { $0.id == b } } ?? tabs.count
         tabs.insert(t, at: pos)
+    }
+
+    /// Goes back to the page a pinned tab or Essential was pinned on.
+    func resetPin(_ id: UUID) {
+        guard let pinned = tab(id)?.pinnedURL else { return }
+        update(id) { $0.url = pinned }
+        if let view = webViews[id] { view.load(URLRequest(url: pinned)) } else { select(id) }
+    }
+
+    /// Makes the tab's current page its pinned page.
+    func setPinURL(_ id: UUID) {
+        update(id) { $0.pinnedURL = $0.url }
     }
 
     /// Messages from a page's injected script (shared with Windows).
@@ -567,6 +615,10 @@ final class BrowserStore: NSObject, ObservableObject {
         case "key": chrome.handleKey(msg["k"] as? String ?? "")
         case "glance":
             if let s = msg["url"] as? String, let url = URL(string: s) { openGlance(url) }
+        case "openTab":
+            if let s = msg["url"] as? String, let url = URL(string: s) {
+                openTab(url, foreground: !(msg["background"] as? Bool ?? false))
+            }
         case "url":
             if let s = msg["url"] as? String, let url = URL(string: s), tab(id)?.url != url {
                 recordVisit(url, title: tab(id)?.title ?? "")
@@ -599,7 +651,7 @@ final class BrowserStore: NSObject, ObservableObject {
     }
 
     func togglePin(_ id: UUID) {
-        update(id) { $0.pinned.toggle(); $0.essential = false }
+        update(id) { $0.pinned.toggle(); $0.essential = false; $0.syncPin() }
     }
 
     func toggleEssential(_ id: UUID) {
@@ -608,6 +660,7 @@ final class BrowserStore: NSObject, ObservableObject {
             $0.essential.toggle()
             $0.pinned = false
             if !$0.essential { $0.workspaceID = ws }
+            $0.syncPin()
         }
     }
 
@@ -739,6 +792,31 @@ final class BrowserStore: NSObject, ObservableObject {
         ) {}
     }
 
+    /// Same choices as the Windows Privacy settings.
+    func clearData(_ kind: String) {
+        let store = WKWebsiteDataStore.default()
+        switch kind {
+        case "history":
+            history.removeAll()
+            historyDirty = true
+            privacyStatus = "History cleared."
+        case "searches":
+            searches.removeAll()
+            searchesDirty = true
+            privacyStatus = "Search history cleared."
+        case "cache":
+            let types: Set<String> = [WKWebsiteDataTypeDiskCache, WKWebsiteDataTypeMemoryCache, WKWebsiteDataTypeFetchCache]
+            store.removeData(ofTypes: types, modifiedSince: .distantPast) { [weak self] in
+                self?.privacyStatus = "Cache cleared."
+            }
+        case "cookies":
+            store.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) { [weak self] in
+                self?.privacyStatus = "Cookies and site data cleared. You may need to sign in to sites again."
+            }
+        default: break
+        }
+    }
+
     // MARK: - Persistence
 
     func save() {
@@ -755,6 +833,10 @@ final class BrowserStore: NSObject, ObservableObject {
             Persistence.saveHistory(history)
             historyDirty = false
         }
+        if searchesDirty {
+            Persistence.saveSearches(searches)
+            searchesDirty = false
+        }
     }
 }
 
@@ -768,10 +850,30 @@ extension BrowserStore: WKNavigationDelegate, WKUIDelegate {
         for navigationAction: WKNavigationAction,
         windowFeatures: WKWindowFeatures
     ) -> WKWebView? {
+        // Pop-ups that ask for a size (sign-in windows like "Sign in with
+        // Google") get a real web view connected to their opener, shown as a
+        // tab, so they can report back. Other new-window links open in front.
+        if windowFeatures.width != nil || windowFeatures.height != nil {
+            let view = WKWebView(frame: .zero, configuration: configuration)
+            view.allowsBackForwardNavigationGestures = true
+            view.navigationDelegate = self
+            view.uiDelegate = self
+            let url = navigationAction.request.url ?? URL(string: "about:blank")!
+            let record = TabRecord(url: url, title: url.host ?? "", workspaceID: activeWorkspace)
+            tabs.append(record)
+            attach(record.id, view)
+            select(record.id)
+            return view
+        }
         if let url = navigationAction.request.url {
-            openTab(url, foreground: navigationAction.navigationType == .linkActivated)
+            openTab(url, foreground: true)
         }
         return nil
+    }
+
+    /// A pop-up closed itself (e.g. after signing in): close its tab.
+    func webViewDidClose(_ webView: WKWebView) {
+        if let id = webViewID(webView) { close(id) }
     }
 
     /// iOS killed the page's process to reclaim memory.

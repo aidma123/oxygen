@@ -1,0 +1,18 @@
+[
+  { "id": "new_tab", "label": "New tab", "combo": "ctrl+t" },
+  { "id": "focus_address", "label": "Address bar", "combo": "ctrl+l" },
+  { "id": "close_tab", "label": "Close tab", "combo": "ctrl+w" },
+  { "id": "reopen_tab", "label": "Reopen closed tab", "combo": "ctrl+shift+t" },
+  { "id": "next_tab", "label": "Next tab", "combo": "ctrl+tab" },
+  { "id": "prev_tab", "label": "Previous tab", "combo": "ctrl+shift+tab" },
+  { "id": "next_workspace", "label": "Next workspace", "combo": "ctrl+alt+arrowright" },
+  { "id": "prev_workspace", "label": "Previous workspace", "combo": "ctrl+alt+arrowleft" },
+  { "id": "collapse_sidebar", "label": "Collapse sidebar", "combo": "ctrl+alt+s" },
+  { "id": "compact_mode", "label": "Compact mode", "combo": "ctrl+alt+c" },
+  { "id": "split_view", "label": "Split view", "combo": "ctrl+alt+v" },
+  { "id": "add_essential", "label": "Add to Essentials", "combo": "ctrl+shift+e" },
+  { "id": "reload", "label": "Reload", "combo": "ctrl+r" },
+  { "id": "back", "label": "Back", "combo": "alt+arrowleft" },
+  { "id": "forward", "label": "Forward", "combo": "alt+arrowright" },
+  { "id": "fullscreen", "label": "Full screen", "combo": "f11" }
+]

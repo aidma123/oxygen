@@ -17,6 +17,20 @@ struct TabRecord: Codable, Identifiable, Hashable {
     var workspaceID: UUID
     var pinned = false
     var essential = false
+    /// The page a pinned tab or Essential was pinned on (as on Windows).
+    var pinnedURL: URL?
+
+    /// Navigated away from its pinned page.
+    var away: Bool { pinnedURL != nil && pinnedURL != url }
+
+    /// Keeps the pinned page in step with the pinned/Essential state.
+    mutating func syncPin() {
+        if pinned || essential {
+            if pinnedURL == nil { pinnedURL = url }
+        } else {
+            pinnedURL = nil
+        }
+    }
 
     var displayTitle: String {
         if !title.isEmpty { return title }
@@ -74,6 +88,14 @@ struct BrowserSettings: Codable, Equatable {
     var collapsed = false
     /// Memory the app tries to stay under (it unloads background tabs above it).
     var memoryBudgetMB = 800
+    /// Also use the interface font on websites.
+    var fontOnSites = false
+    /// Live search suggestions from the search engine while typing.
+    var searchSuggestions = true
+    /// Shown for parity with Windows; iOS's own AutoFill handles passwords.
+    var savePasswords = true
+    /// Custom shortcuts: action id -> combo ("" = unbound), as on Windows.
+    var keybinds: [String: String] = [:]
 
     init() {}
 
@@ -90,6 +112,10 @@ struct BrowserSettings: Codable, Equatable {
         forceDark = (try? c.decodeIfPresent(Bool.self, forKey: .forceDark)) ?? d.forceDark
         collapsed = (try? c.decodeIfPresent(Bool.self, forKey: .collapsed)) ?? d.collapsed
         memoryBudgetMB = (try? c.decodeIfPresent(Int.self, forKey: .memoryBudgetMB)) ?? d.memoryBudgetMB
+        fontOnSites = (try? c.decodeIfPresent(Bool.self, forKey: .fontOnSites)) ?? d.fontOnSites
+        searchSuggestions = (try? c.decodeIfPresent(Bool.self, forKey: .searchSuggestions)) ?? d.searchSuggestions
+        savePasswords = (try? c.decodeIfPresent(Bool.self, forKey: .savePasswords)) ?? d.savePasswords
+        keybinds = (try? c.decodeIfPresent([String: String].self, forKey: .keybinds)) ?? d.keybinds
     }
 
     var colorScheme: ColorScheme? {
@@ -121,6 +147,76 @@ enum Shared {
     static let contentJS = text("content", "js")
     static let glanceJS = text("glance", "js")
 
+    /// Default shortcuts, from the same keybinds.json as Windows.
+    static let defaultKeyActions: [[String: String]] = {
+        guard let data = text("keybinds", "json").data(using: .utf8),
+              let list = try? JSONSerialization.jsonObject(with: data) as? [[String: String]] else { return [] }
+        return list
+    }()
+
+    /// Every action with the combo currently assigned to it.
+    static func keyActions(_ s: BrowserSettings) -> [[String: String]] {
+        defaultKeyActions.map { a in
+            var a = a
+            if let id = a["id"], let custom = s.keybinds[id] { a["combo"] = custom }
+            return a
+        }
+    }
+
+    static func action(for combo: String, _ s: BrowserSettings) -> String? {
+        guard !combo.isEmpty else { return nil }
+        return keyActions(s).first { $0["combo"] == combo }?["id"]
+    }
+
+    static let jetbrainsFace: String = {
+        guard let url = Bundle.main.url(forResource: "JetBrainsMono-latin", withExtension: "woff2"),
+              let font = try? Data(contentsOf: url) else { return "" }
+        return "@font-face{font-family:'JetBrains Mono';src:url(data:font/woff2;base64,\(font.base64EncodedString())) format('woff2');font-weight:100 800;font-display:block}"
+    }()
+
+    /// Same as Windows' page setup: which keys are browser shortcuts, and
+    /// the font to use on websites.
+    static func pageSetupScript(_ s: BrowserSettings) -> String {
+        let combos = keyActions(s).compactMap { $0["combo"] }.filter { !$0.isEmpty }
+        let keys = (try? JSONSerialization.data(withJSONObject: combos)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+        var script = "window.__OXYGEN_KEYS = new Set(\(keys));"
+        if s.fontOnSites {
+            let family: String
+            switch s.font {
+            case "jetbrains": family = "'JetBrains Mono', ui-monospace, monospace"
+            case "georgia": family = "Georgia, serif"
+            case "verdana": family = "Verdana, sans-serif"
+            case "cascadia", "consolas": family = "ui-monospace, monospace"
+            default: family = "-apple-system, system-ui, sans-serif"
+            }
+            let cfg: [String: String] = ["family": family, "face": s.font == "jetbrains" ? jetbrainsFace : ""]
+            let json = (try? JSONSerialization.data(withJSONObject: cfg)).flatMap { String(data: $0, encoding: .utf8) } ?? "null"
+            script += "window.__OXYGEN_SITE_FONT=\(json);"
+        } else {
+            script += "window.__OXYGEN_SITE_FONT=null;"
+        }
+        return script
+    }
+
+    /// Live search suggestions from the engine (OpenSearch JSON), same
+    /// endpoints as Windows.
+    static func fetchSuggestions(engine: SearchEngine, query: String) async -> [String] {
+        let q = query.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? query
+        let endpoint: String
+        switch engine {
+        case .google: endpoint = "https://suggestqueries.google.com/complete/search?client=firefox&q=\(q)"
+        case .bing: endpoint = "https://api.bing.com/osjson.aspx?query=\(q)"
+        case .brave: endpoint = "https://search.brave.com/api/suggest?q=\(q)"
+        case .startpage: endpoint = "https://www.startpage.com/suggestions?q=\(q)&format=opensearch"
+        case .duckduckgo: endpoint = "https://duckduckgo.com/ac/?q=\(q)&type=list"
+        }
+        guard let url = URL(string: endpoint),
+              let (data, _) = try? await URLSession.shared.data(from: url),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [Any],
+              json.count > 1, let list = json[1] as? [String] else { return [] }
+        return Array(list.prefix(5))
+    }
+
     /// Gives shared pages the same `window.ipc.postMessage` the Windows webview has.
     static let bridgeJS = """
         window.__OXYGEN_PLATFORM = 'ios';
@@ -131,10 +227,12 @@ enum Shared {
 /// Forwards script messages without the WKUserContentController retaining
 /// the real handler (which would leak it).
 final class ScriptMessageProxy: NSObject, WKScriptMessageHandler {
-    private let handler: (String) -> Void
-    init(_ handler: @escaping (String) -> Void) { self.handler = handler }
+    private let handler: (String, WKWebView?) -> Void
+    init(_ handler: @escaping (String) -> Void) { self.handler = { body, _ in handler(body) } }
+    /// Also passes the web view that sent the message.
+    init(withSender handler: @escaping (String, WKWebView?) -> Void) { self.handler = handler }
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
-        if let body = message.body as? String { handler(body) }
+        if let body = message.body as? String { handler(body, message.webView) }
     }
 }
 
@@ -345,6 +443,18 @@ enum Persistence {
 
     static func saveHistory(_ history: [HistoryEntry]) {
         write(history, to: historyURL)
+    }
+
+    static var searchesURL: URL { fileURL.deletingLastPathComponent().appendingPathComponent("searches.json") }
+
+    /// Searches typed into the address bar, most recent first.
+    static func loadSearches() -> [String] {
+        guard let data = try? Data(contentsOf: searchesURL) else { return [] }
+        return (try? JSONDecoder().decode([String].self, from: data)) ?? []
+    }
+
+    static func saveSearches(_ searches: [String]) {
+        write(searches, to: searchesURL)
     }
 
     private static func write<T: Encodable>(_ value: T, to url: URL) {

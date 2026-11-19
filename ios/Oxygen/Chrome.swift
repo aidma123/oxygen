@@ -76,6 +76,7 @@ final class Chrome {
                 "id": number(t.id), "url": t.url.absoluteString, "title": t.title,
                 "loaded": store.loadedIDs.contains(t.id), "active": t.id == active,
                 "essential": t.essential, "pinned": t.pinned,
+                "pinnedUrl": t.pinnedURL.map { $0.absoluteString as Any } ?? NSNull(), "away": t.away,
             ]
         }
         let s = store.settings
@@ -93,6 +94,10 @@ final class Chrome {
             "mode": store.mode,
             "mem": store.memoryMB,
             "restartNeeded": false,
+            "keyActions": Shared.keyActions(s),
+            "extSupported": false,
+            "extensions": [Any](),
+            "privacyStatus": store.privacyStatus,
             "settings": [
                 "search_engine": s.searchEngine.rawValue,
                 "memory_budget_mb": s.memoryBudgetMB,
@@ -105,6 +110,10 @@ final class Chrome {
                 "theme": s.theme,
                 "font": s.font,
                 "force_dark": s.forceDark,
+                "font_on_sites": s.fontOnSites,
+                "search_suggestions": s.searchSuggestions,
+                "save_passwords": s.savePasswords,
+                "keybinds": s.keybinds,
             ] as [String: Any],
         ]
         call("render", state)
@@ -135,7 +144,26 @@ final class Chrome {
         case "frame":
             if let color = parseRGB(v["color"] as? String) { store.frameColor = color }
         case "history":
-            call("history", store.suggestionHistory().map { ["url": $0.url.absoluteString, "title": $0.title] })
+            let list = store.suggestionHistory().map { ["url": $0.url.absoluteString, "title": $0.title] }
+            if let a = try? JSONSerialization.data(withJSONObject: list), let b = try? JSONSerialization.data(withJSONObject: Array(store.searches.prefix(100))),
+               let la = String(data: a, encoding: .utf8), let lb = String(data: b, encoding: .utf8), ready {
+                webView.evaluateJavaScript("window.zl&&zl.history(\(la),\(lb))")
+            }
+        case "suggest":
+            let q = v["q"] as? String ?? ""
+            guard store.settings.searchSuggestions, !q.trimmingCharacters(in: .whitespaces).isEmpty else { break }
+            let engine = store.settings.searchEngine
+            Task { @MainActor [weak self] in
+                let list = await Shared.fetchSuggestions(engine: engine, query: q)
+                guard let self, self.ready,
+                      let qa = try? JSONSerialization.data(withJSONObject: [q]), let la = try? JSONSerialization.data(withJSONObject: list),
+                      let qs = String(data: qa, encoding: .utf8), let ls = String(data: la, encoding: .utf8) else { return }
+                self.webView.evaluateJavaScript("window.zl&&zl.suggestions(\(qs)[0],\(ls))")
+            }
+        case "clearData": store.clearData(v["kind"] as? String ?? "")
+        case "resetPin": if let id { store.resetPin(id) }
+        case "setPinUrl": if let id { store.setPinURL(id) }
+        case "action": runAction(v["id"] as? String ?? "")
         case "go":
             store.setPeek(false)
             store.go(v["input"] as? String ?? "", newTab: v["newTab"] as? Bool ?? false)
@@ -198,6 +226,10 @@ final class Chrome {
         if let t = s["theme"] as? String { new.theme = t }
         if let f = s["font"] as? String { new.font = f }
         if let b = s["force_dark"] as? Bool { new.forceDark = b }
+        if let b = s["font_on_sites"] as? Bool { new.fontOnSites = b }
+        if let b = s["search_suggestions"] as? Bool { new.searchSuggestions = b }
+        if let b = s["save_passwords"] as? Bool { new.savePasswords = b }
+        if let k = s["keybinds"] as? [String: String] { new.keybinds = k }
         if new != store.settings { store.settings = new }
         if let b = s["compact"] as? Bool, b != store.compact {
             store.compact = b
@@ -205,33 +237,19 @@ final class Chrome {
         }
     }
 
-    /// Keyboard shortcuts, identical to Windows (⌘ arrives as "ctrl").
+    /// Keyboard shortcuts, identical to Windows: fixed keys first, then the
+    /// user's shortcuts (defaults in keybinds.json). ⌘ arrives as "ctrl".
     func handleKey(_ k: String) {
         guard let store else { return }
         switch k {
-        case "ctrl+t": store.requestAddress(newTab: true)
-        case "ctrl+l": store.requestAddress(newTab: false)
-        case "ctrl+w":
-            if store.glance != nil { store.glance = nil } else { store.closeActive() }
-        case "ctrl+shift+t": store.reopenClosed()
-        case "ctrl+tab": store.cycleTab(1)
-        case "ctrl+shift+tab": store.cycleTab(-1)
-        case "ctrl+alt+s": store.toggleCollapsed()
-        case "ctrl+alt+c":
-            store.compact.toggle()
-            store.peek = false
-        case "ctrl+alt+v": store.toggleSplit()
-        case "ctrl+alt+arrowleft": store.cycleWorkspace(-1)
-        case "ctrl+alt+arrowright": store.cycleWorkspace(1)
-        case "ctrl+shift+e": if let a = store.activeTabID { store.toggleEssential(a) }
         case "escape":
             store.glance = nil
             store.setPeek(false)
-        case "ctrl+r", "f5": store.reload()
-        case "alt+arrowleft": store.goBack()
-        case "alt+arrowright": store.goForward()
+        case "f5": runAction("reload")
         default:
-            if k.hasPrefix("ctrl+"), let n = Int(k.dropFirst(5)) {
+            if let action = Shared.action(for: k, store.settings) {
+                runAction(action)
+            } else if k.hasPrefix("ctrl+"), let n = Int(k.dropFirst(5)) {
                 let list = store.orderedTabIDs
                 let target = n == 9 ? list.last : (n >= 1 && n <= list.count ? list[n - 1] : nil)
                 if let target { store.select(target) }
@@ -239,6 +257,30 @@ final class Chrome {
         }
     }
 
+    func runAction(_ action: String) {
+        guard let store else { return }
+        switch action {
+        case "new_tab": store.requestAddress(newTab: true)
+        case "focus_address": store.requestAddress(newTab: false)
+        case "close_tab":
+            if store.glance != nil { store.glance = nil } else { store.closeActive() }
+        case "reopen_tab": store.reopenClosed()
+        case "next_tab": store.cycleTab(1)
+        case "prev_tab": store.cycleTab(-1)
+        case "collapse_sidebar": store.toggleCollapsed()
+        case "compact_mode":
+            store.compact.toggle()
+            store.peek = false
+        case "split_view": store.toggleSplit()
+        case "prev_workspace": store.cycleWorkspace(-1)
+        case "next_workspace": store.cycleWorkspace(1)
+        case "add_essential": if let a = store.activeTabID { store.toggleEssential(a) }
+        case "reload": store.reload()
+        case "back": store.goBack()
+        case "forward": store.goForward()
+        default: break
+        }
+    }
     private func parseRGB(_ s: String?) -> UIColor? {
         guard let s, let open = s.firstIndex(of: "(") else { return nil }
         let parts = s[s.index(after: open)...]
