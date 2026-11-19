@@ -454,7 +454,7 @@ final class BrowserStore: NSObject, ObservableObject {
             let script = Shared.pageSetupScript(settings) + "window.__oxygenApplyFont&&__oxygenApplyFont();"
             for view in webViews.values {
                 installScripts(view.configuration.userContentController, page: Shared.contentJS)
-                view.evaluateJavaScript(script)
+                view.evaluateJavaScript(script, completionHandler: nil)
             }
         }
         if old.blockAds != settings.blockAds, let list = ruleList {

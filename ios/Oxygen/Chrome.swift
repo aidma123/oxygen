@@ -63,7 +63,7 @@ final class Chrome {
         guard ready,
               let data = try? JSONSerialization.data(withJSONObject: argument, options: [.fragmentsAllowed]),
               let json = String(data: data, encoding: .utf8) else { return }
-        webView.evaluateJavaScript("window.zl&&zl.\(function)(\(json))")
+        webView.evaluateJavaScript("window.zl&&zl.\(function)(\(json))", completionHandler: nil)
     }
 
     // MARK: - State sent to the page (same shape as Windows)
@@ -121,11 +121,11 @@ final class Chrome {
 
     func updateMemory() {
         guard let store, ready else { return }
-        webView.evaluateJavaScript("window.zl&&zl.mem(\(store.memoryMB),\(store.settings.memoryBudgetMB))")
+        webView.evaluateJavaScript("window.zl&&zl.mem(\(store.memoryMB),\(store.settings.memoryBudgetMB))", completionHandler: nil)
     }
 
     func focusAddress(newTab: Bool) {
-        webView.evaluateJavaScript("window.zl&&zl.focusUrl(\(newTab))")
+        webView.evaluateJavaScript("window.zl&&zl.focusUrl(\(newTab))", completionHandler: nil)
     }
 
     // MARK: - Messages from the page (same protocol as Windows)
@@ -147,7 +147,7 @@ final class Chrome {
             let list = store.suggestionHistory().map { ["url": $0.url.absoluteString, "title": $0.title] }
             if let a = try? JSONSerialization.data(withJSONObject: list), let b = try? JSONSerialization.data(withJSONObject: Array(store.searches.prefix(100))),
                let la = String(data: a, encoding: .utf8), let lb = String(data: b, encoding: .utf8), ready {
-                webView.evaluateJavaScript("window.zl&&zl.history(\(la),\(lb))")
+                webView.evaluateJavaScript("window.zl&&zl.history(\(la),\(lb))", completionHandler: nil)
             }
         case "suggest":
             let q = v["q"] as? String ?? ""
@@ -158,7 +158,7 @@ final class Chrome {
                 guard let self, self.ready,
                       let qa = try? JSONSerialization.data(withJSONObject: [q]), let la = try? JSONSerialization.data(withJSONObject: list),
                       let qs = String(data: qa, encoding: .utf8), let ls = String(data: la, encoding: .utf8) else { return }
-                self.webView.evaluateJavaScript("window.zl&&zl.suggestions(\(qs)[0],\(ls))")
+                self.webView.evaluateJavaScript("window.zl&&zl.suggestions(\(qs)[0],\(ls))", completionHandler: nil)
             }
         case "clearData": store.clearData(v["kind"] as? String ?? "")
         case "resetPin": if let id { store.resetPin(id) }
