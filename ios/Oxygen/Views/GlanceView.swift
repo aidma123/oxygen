@@ -1,54 +1,38 @@
 import SwiftUI
 import WebKit
 
-/// Glance: preview a link in a sheet without opening a tab. The page is
-/// discarded when the sheet closes unless you promote it to a tab.
+/// Glance: preview a link in a floating panel without opening a tab. Uses the
+/// same injected toolbar (glance.js) as Windows: open as tab, and close.
 @MainActor
 final class GlanceModel: ObservableObject {
-    let webView: WKWebView
-    @Published var title = ""
-    private var observation: NSKeyValueObservation?
+    private(set) var webView: WKWebView!
 
     init(url: URL, store: BrowserStore) {
-        webView = store.makeWebView()
-        webView.load(URLRequest(url: url))
-        observation = webView.observe(\.title, options: [.new]) { [weak self] view, _ in
-            Task { @MainActor in self?.title = view.title ?? "" }
+        webView = store.makeWebView(script: Shared.glanceJS) { [weak self, weak store] message in
+            guard let store else { return }
+            switch message {
+            case "close":
+                store.glance = nil
+            case "expand":
+                let current = self?.webView.url ?? url
+                store.glance = nil
+                store.openTab(current, foreground: true)
+            default:
+                break
+            }
         }
+        webView.load(URLRequest(url: url))
     }
 }
 
 struct GlanceView: View {
     @StateObject private var model: GlanceModel
-    @Environment(\.dismiss) private var dismiss
-    private let store: BrowserStore
 
     init(item: GlanceItem, store: BrowserStore) {
-        self.store = store
         _model = StateObject(wrappedValue: GlanceModel(url: item.url, store: store))
     }
 
     var body: some View {
-        NavigationStack {
-            WebViewContainer(webView: model.webView)
-                .ignoresSafeArea(edges: .bottom)
-                .navigationTitle(model.title)
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Close") { dismiss() }
-                    }
-                    ToolbarItem(placement: .primaryAction) {
-                        Button {
-                            if let url = model.webView.url {
-                                store.openTab(url, foreground: true)
-                            }
-                            dismiss()
-                        } label: {
-                            Label("Open as Tab", systemImage: "arrow.up.left.and.arrow.down.right")
-                        }
-                    }
-                }
-        }
+        WebViewContainer(webView: model.webView)
     }
 }

@@ -5,10 +5,11 @@ import WebKit
 /// of recreating it, so pages keep their state while loaded.
 struct WebViewContainer: UIViewRepresentable {
     let webView: WKWebView
+    var background: UIColor = .systemBackground
 
     func makeUIView(context: Context) -> UIView {
         let container = UIView()
-        container.backgroundColor = .systemBackground
+        container.backgroundColor = background
         attach(to: container)
         return container
     }

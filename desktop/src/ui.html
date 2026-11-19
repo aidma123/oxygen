@@ -46,6 +46,11 @@
 :root[data-font="georgia"] { --font: Georgia, "Times New Roman", serif; }
 :root[data-font="verdana"] { --font: Verdana, Tahoma, sans-serif; }
 
+/* Engines without color-mix (iOS before 16.2) use the untinted frame colour. */
+@supports not (color: color-mix(in srgb, red 50%, blue)) {
+  :root, :root[data-theme="dark"] { --frame: var(--frame-base); }
+}
+
 /* Native controls (dropdown lists, scrollbars) follow the active theme. */
 :root { color-scheme: light; }
 :root[data-theme="dark"] { color-scheme: dark; }
@@ -57,6 +62,26 @@ option { background: var(--menu); color: var(--fg); }
 #s_font option[value="consolas"] { font-family: Consolas, monospace; }
 #s_font option[value="georgia"] { font-family: Georgia, serif; }
 #s_font option[value="verdana"] { font-family: Verdana, sans-serif; }
+
+/* Touch screens (the iOS app runs this same page): no hover, so controls that
+   appear on hover are shown where they are needed, and the system long-press
+   callout is replaced by oxygen's own menu. */
+.ios-only { display: none !important; }
+:root[data-platform="ios"] .ios-only { display: inline-grid !important; }
+:root[data-platform="ios"] body { -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; font-size: 14px; }
+@media (hover: none) {
+  button:hover { background: transparent; color: var(--muted); }
+  button:active { background: var(--press); color: var(--fg); }
+  .tab:hover { background: transparent; }
+  .tab.active:hover { background: var(--tab-active); }
+  .ess:hover { background: var(--hover); }
+  .ess.active:hover { background: var(--tab-active); }
+  #wshead button { opacity: 1; }
+  .tab .x { opacity: 0; }
+  .tab.active .x { opacity: 1; }
+}
+:root[data-platform="ios"] .tab { height: 40px; }
+:root[data-platform="ios"] #toolbar button, :root[data-platform="ios"] #wss button, :root[data-platform="ios"] #footer > button { width: 34px; height: 34px; }
 
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; overflow: hidden; }
@@ -258,6 +283,7 @@ kbd { font: 11px var(--font); padding: 1px 5px; border-radius: 4px; background: 
   <div id="footer">
     <div id="wss"></div>
     <button id="addws" title="New workspace"></button>
+    <button id="tabsbtn" class="ios-only" title="Show all tabs"></button>
     <button id="settingsbtn" title="Settings"></button>
   </div>
 
@@ -319,6 +345,9 @@ kbd { font: 11px var(--font); padding: 1px 5px; border-radius: 4px; background: 
 const post = (m) => window.ipc.postMessage(JSON.stringify(m));
 const $ = (id) => document.getElementById(id);
 const root = document.documentElement;
+// The iOS app sets this before the page loads; it shares this whole page.
+const IOS = window.__OXYGEN_PLATFORM === 'ios';
+root.dataset.platform = IOS ? 'ios' : 'windows';
 
 // Line icons (paths from the Lucide icon set, ISC license).
 const P = {
@@ -365,7 +394,15 @@ const WS_COLORS = ['#6f9fd8', '#5fb0b4', '#7fb58c', '#d6ad6c', '#d98c9c', '#9d92
 const icon = (name, cls = 'i') => `<svg class="${cls}" viewBox="0 0 24 24">${P[name] || P.globe}</svg>`;
 
 for (const [id, name] of [['collapse', 'sidebar'], ['back', 'back'], ['fwd', 'fwd'], ['reload', 'reload'], ['wsmore', 'more'],
-  ['addws', 'plus'], ['settingsbtn', 'settings'], ['s_close', 'back'], ['w_close', 'back'], ['newtabicon', 'plus']]) $(id).innerHTML = icon(name);
+  ['addws', 'plus'], ['settingsbtn', 'settings'], ['s_close', 'back'], ['w_close', 'back'], ['newtabicon', 'plus'], ['tabsbtn', 'tab']]) $(id).innerHTML = icon(name);
+$('tabsbtn').onclick = () => post({ t: 'tabs' });
+if (IOS) {
+  // Apple keyboards: show the same shortcuts with Apple's modifier symbols.
+  document.querySelectorAll('kbd').forEach((k) => {
+    k.textContent = { Ctrl: '⌘', Alt: '⌥', Shift: '⇧' }[k.textContent] || k.textContent;
+  });
+  document.querySelectorAll('[title]').forEach((el) => { el.title = el.title.replace(/Ctrl\+/g, '⌘').replace(/Alt\+/g, '⌥'); });
+}
 
 let S = null, prevWs = null, prevWsIndex = 0, newTabMode = false, dragId = null, history = [], sugg = [], suggSel = 0, editingWs = null;
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -809,6 +846,41 @@ addEventListener('keydown', (e) => {
     'ctrl+alt+arrowright', 'ctrl+shift+e', 'f11', 'escape', 'ctrl+r', 'f5', 'alt+arrowleft', 'alt+arrowright'];
   if (fwd.includes(combo) || /^ctrl\+[1-9]$/.test(combo)) { e.preventDefault(); post({ t: 'key', k: combo }); }
 });
+
+// Touch: long-press opens the same menu as right-click; swiping the
+// workspace bar switches workspace (the touch version of scrolling it).
+if (IOS) {
+  let lp = null, swallowClick = false;
+  document.addEventListener('touchstart', (e) => {
+    const target = e.target.closest('[data-id], [data-ws]');
+    const p = e.touches[0];
+    if (!target || !p) return;
+    lp = { x: p.clientX, y: p.clientY, timer: setTimeout(() => {
+      lp = null;
+      swallowClick = true;
+      target.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: p.clientX, clientY: p.clientY }));
+    }, 450) };
+  }, { passive: true });
+  document.addEventListener('touchmove', (e) => {
+    const p = e.touches[0];
+    if (lp && p && Math.hypot(p.clientX - lp.x, p.clientY - lp.y) > 10) { clearTimeout(lp.timer); lp = null; }
+  }, { passive: true });
+  document.addEventListener('touchend', () => { if (lp) { clearTimeout(lp.timer); lp = null; } }, { passive: true });
+  document.addEventListener('click', (e) => {
+    if (swallowClick && !e.target.closest('#menu')) { swallowClick = false; e.preventDefault(); e.stopImmediatePropagation(); }
+    else swallowClick = false;
+  }, true);
+
+  let swipe = null;
+  $('footer').addEventListener('touchstart', (e) => { const p = e.touches[0]; swipe = p && { x: p.clientX, y: p.clientY }; }, { passive: true });
+  $('footer').addEventListener('touchend', (e) => {
+    const p = e.changedTouches[0];
+    if (!swipe || !p) return;
+    const dx = p.clientX - swipe.x, dy = p.clientY - swipe.y;
+    swipe = null;
+    if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) post({ t: 'key', k: dx < 0 ? 'ctrl+alt+arrowright' : 'ctrl+alt+arrowleft' });
+  }, { passive: true });
+}
 
 post({ t: 'ready' });
 </script>

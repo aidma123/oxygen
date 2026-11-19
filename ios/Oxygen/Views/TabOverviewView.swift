@@ -4,7 +4,6 @@ import SwiftUI
 struct TabOverviewView: View {
     @EnvironmentObject private var store: BrowserStore
     @Environment(\.dismiss) private var dismiss
-    @State private var editor: WorkspaceEditor.Target?
 
     private let columns = [GridItem(.adaptive(minimum: 150, maximum: 220), spacing: 14)]
 
@@ -27,7 +26,7 @@ struct TabOverviewView: View {
                 .padding(16)
                 .animation(.spring(response: 0.32, dampingFraction: 0.86), value: store.orderedTabIDs)
             }
-            .background(Color.oxygenFrame(accent: store.accentColor).ignoresSafeArea())
+            .background((store.frameColor.map { Color(uiColor: $0) } ?? Color(red: 0.9, green: 0.93, blue: 0.97)).ignoresSafeArea())
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .principal) { workspaceSwitcher }
@@ -47,7 +46,6 @@ struct TabOverviewView: View {
             }
         }
         .tint(store.accentColor)
-        .sheet(item: $editor) { WorkspaceEditor(target: $0).environmentObject(store) }
     }
 
     private var workspaceSwitcher: some View {
@@ -57,8 +55,6 @@ struct TabOverviewView: View {
                     Label(ws.name, systemImage: WorkspaceStyle.symbol(for: ws.icon))
                 }
             }
-            Divider()
-            Button { editor = .new } label: { Label("New Workspace", systemImage: "plus") }
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: WorkspaceStyle.symbol(for: store.activeWorkspaceModel.icon))
@@ -182,5 +178,45 @@ private struct CardPressStyle: ButtonStyle {
         configuration.label
             .scaleEffect(configuration.isPressed ? 0.96 : 1)
             .animation(.easeOut(duration: 0.15), value: configuration.isPressed)
+    }
+}
+
+/// Long-press menu for a tab card (same actions as the sidebar's tab menu).
+struct TabMenu: View {
+    @EnvironmentObject private var store: BrowserStore
+    let tab: TabRecord
+
+    var body: some View {
+        Button { store.toggleEssential(tab.id) } label: {
+            Label(tab.essential ? "Remove from Essentials" : "Add to Essentials", systemImage: "star")
+        }
+        if !tab.essential {
+            Button { store.togglePin(tab.id) } label: {
+                Label(tab.pinned ? "Unpin tab" : "Pin tab", systemImage: "pin")
+            }
+        }
+        if let active = store.activeTabID, active != tab.id, !store.isInSplit(tab.id) {
+            Button { store.splitWith(tab.id) } label: {
+                Label("Split view with current tab", systemImage: "rectangle.split.2x1")
+            }
+        }
+        if store.isInSplit(tab.id) {
+            Button { store.unsplit() } label: { Label("Close split view", systemImage: "rectangle") }
+        }
+        Divider()
+        Button { store.reloadTab(tab.id) } label: { Label("Reload", systemImage: "arrow.clockwise") }
+        Button { store.duplicate(tab.id) } label: { Label("Duplicate", systemImage: "plus.square.on.square") }
+        if store.loadedIDs.contains(tab.id) && !store.visibleIDs().contains(tab.id) {
+            Button { store.unload(tab.id) } label: { Label("Unload to free memory", systemImage: "moon") }
+        }
+        if !tab.essential {
+            ForEach(store.workspaces.filter { $0.id != tab.workspaceID }) { ws in
+                Button { store.move(tab.id, toWorkspace: ws.id) } label: {
+                    Label("Move to \(ws.name)", systemImage: "arrow.right")
+                }
+            }
+        }
+        Divider()
+        Button(role: .destructive) { store.close(tab.id) } label: { Label("Close tab", systemImage: "xmark") }
     }
 }

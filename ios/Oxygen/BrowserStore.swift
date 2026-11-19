@@ -17,6 +17,13 @@ final class BrowserStore: NSObject, ObservableObject {
         didSet { settingsChanged(from: oldValue) }
     }
     @Published var compact = false
+    /// The full sidebar is floating over the page (Windows' "peek").
+    @Published var peek = false
+    /// iPhone portrait: too narrow to dock the full sidebar, so it rests collapsed.
+    @Published var narrow = false
+    /// Frame colour reported by the shared sidebar page.
+    @Published var frameColor: UIColor?
+    @Published var memoryMB = 0
     @Published var showSidebar = false
     @Published var showTabs = false
     @Published var glance: GlanceItem?
@@ -32,6 +39,16 @@ final class BrowserStore: NSObject, ObservableObject {
 
     private var webViews: [UUID: WKWebView] = [:]
     private var historyDirty = false
+    /// The shared sidebar (same page as Windows).
+    lazy var chrome = Chrome(store: self)
+
+    /// Same modes as the Windows sidebar.
+    var mode: String {
+        if peek { return "peek" }
+        if compact { return "hidden" }
+        if settings.collapsed || narrow { return "rail" }
+        return "expanded"
+    }
     private var observers: [UUID: [NSKeyValueObservation]] = [:]
     private var lastActive: [UUID: Date] = [:]
     private var previouslyVisible: Set<UUID> = []
@@ -85,8 +102,9 @@ final class BrowserStore: NSObject, ObservableObject {
             Task { @MainActor in self?.enforceLimits(aggressive: true) }
         }
 
-        timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.enforceLimits() }
+        // Every few seconds: measure memory, enforce limits, update the meter.
+        timer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.tick() }
         }
 
         objectWillChange
@@ -148,8 +166,26 @@ final class BrowserStore: NSObject, ObservableObject {
 
     // MARK: - Web views
 
+    private func tick() {
+        memoryMB = MemoryInfo.footprintMB()
+        enforceLimits(aggressive: memoryMB > settings.memoryBudgetMB)
+        chrome.updateMemory()
+    }
+
+    /// A page webview with the same injected script as Windows (shortcuts,
+    /// Alt+click Glance, single-page-app URL tracking).
     func makeWebView() -> WKWebView {
+        makeWebView(script: Shared.contentJS, onMessage: nil)
+    }
+
+    func makeWebView(script: String, onMessage: ((String) -> Void)?) -> WKWebView {
         let config = WKWebViewConfiguration()
+        let ucc = config.userContentController
+        ucc.addUserScript(WKUserScript(source: Shared.bridgeJS, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        ucc.addUserScript(WKUserScript(source: script, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        ucc.add(ScriptMessageProxy { body in
+            Task { @MainActor in onMessage?(body) }
+        }, name: "ipc")
         config.allowsInlineMediaPlayback = true
         // Media waits for a tap: autoplaying video is a big memory and battery cost.
         config.mediaTypesRequiringUserActionForPlayback = .all
@@ -195,7 +231,9 @@ final class BrowserStore: NSObject, ObservableObject {
 
     private func load(_ id: UUID) {
         guard webViews[id] == nil, let record = tab(id) else { return }
-        let view = makeWebView()
+        let view = makeWebView(script: Shared.contentJS) { [weak self] body in
+            self?.contentMessage(id, body)
+        }
         observers[id] = [
             view.observe(\.title, options: [.new]) { [weak self] wv, _ in
                 Task { @MainActor in
@@ -410,7 +448,13 @@ final class BrowserStore: NSObject, ObservableObject {
         if !t.essential { activeWorkspace = t.workspaceID }
         activeTabs[activeWorkspace] = id
         showSidebar = false
+        peek = false
         refresh()
+    }
+
+    /// Ranked history for the sidebar's address bar suggestions.
+    func suggestionHistory() -> [HistoryEntry] {
+        Array(rankedHistory().prefix(300))
     }
 
     @discardableResult
@@ -478,12 +522,57 @@ final class BrowserStore: NSObject, ObservableObject {
     }
 
     /// iPad: toggles the sidebar between full width and a strip of favicons.
+    /// The sidebar button, as on Windows. On iPhone the full sidebar doesn't
+    /// fit beside the page, so the button slides it over the page instead.
     func toggleCollapsed() {
-        if compact {
+        if narrow && !compact {
+            peek.toggle()
+        } else if compact {
             compact = false
             settings.collapsed = true
         } else {
             settings.collapsed.toggle()
+        }
+    }
+
+    func setPeek(_ on: Bool) {
+        if peek != on { peek = on }
+    }
+
+    func reloadTab(_ id: UUID) {
+        webViews[id]?.reload()
+    }
+
+    /// Drag-and-drop reordering from the sidebar (same rules as Windows).
+    func moveTab(_ id: UUID, before: UUID?, section: String) {
+        guard before != id, let i = index(id) else { return }
+        var t = tabs.remove(at: i)
+        if section == "essentials" {
+            t.essential = true
+            t.pinned = false
+        } else {
+            t.essential = false
+            t.pinned = section == "pinned"
+            t.workspaceID = activeWorkspace
+        }
+        let pos = before.flatMap { b in tabs.firstIndex { $0.id == b } } ?? tabs.count
+        tabs.insert(t, at: pos)
+    }
+
+    /// Messages from a page's injected script (shared with Windows).
+    private func contentMessage(_ id: UUID, _ body: String) {
+        guard let data = body.data(using: .utf8),
+              let msg = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+        switch msg["t"] as? String {
+        case "key": chrome.handleKey(msg["k"] as? String ?? "")
+        case "glance":
+            if let s = msg["url"] as? String, let url = URL(string: s) { openGlance(url) }
+        case "url":
+            if let s = msg["url"] as? String, let url = URL(string: s), tab(id)?.url != url {
+                recordVisit(url, title: tab(id)?.title ?? "")
+                update(id) { $0.url = url }
+            }
+        default: break
         }
     }
 
@@ -632,9 +721,11 @@ final class BrowserStore: NSObject, ObservableObject {
     func goForward() { activeTabID.flatMap { webViews[$0] }?.goForward() }
     func reload() { activeTabID.flatMap { webViews[$0] }?.reload() }
 
+    /// Focuses the sidebar's address bar, sliding the sidebar out first when
+    /// it is collapsed or hidden (same as Ctrl+T on Windows).
     func requestAddress(newTab: Bool) {
-        showSidebar = false
-        addressRequest = AddressRequest(newTab: newTab)
+        if mode != "expanded" { peek = true }
+        chrome.focusAddress(newTab: newTab)
     }
 
     func openGlance(_ url: URL) {

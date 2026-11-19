@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import UIKit
+import WebKit
 
 struct Workspace: Codable, Identifiable, Hashable {
     var id = UUID()
@@ -69,8 +70,10 @@ struct BrowserSettings: Codable, Equatable {
     var font = "system"
     /// Darken websites that have no dark theme of their own.
     var forceDark = false
-    /// iPad: sidebar collapsed to a strip of favicons.
+    /// Sidebar collapsed to a strip of favicons.
     var collapsed = false
+    /// Memory the app tries to stay under (it unloads background tabs above it).
+    var memoryBudgetMB = 800
 
     init() {}
 
@@ -86,6 +89,7 @@ struct BrowserSettings: Codable, Equatable {
         font = (try? c.decodeIfPresent(String.self, forKey: .font)) ?? d.font
         forceDark = (try? c.decodeIfPresent(Bool.self, forKey: .forceDark)) ?? d.forceDark
         collapsed = (try? c.decodeIfPresent(Bool.self, forKey: .collapsed)) ?? d.collapsed
+        memoryBudgetMB = (try? c.decodeIfPresent(Int.self, forKey: .memoryBudgetMB)) ?? d.memoryBudgetMB
     }
 
     var colorScheme: ColorScheme? {
@@ -94,6 +98,43 @@ struct BrowserSettings: Codable, Equatable {
         case "dark": return .dark
         default: return nil
         }
+    }
+}
+
+/// Files shared with the Windows version (bundled from desktop/).
+enum Shared {
+    static func text(_ name: String, _ ext: String) -> String {
+        guard let url = Bundle.main.url(forResource: name, withExtension: ext),
+              let s = try? String(contentsOf: url, encoding: .utf8) else { return "" }
+        return s
+    }
+
+    /// The sidebar page, with JetBrains Mono inlined exactly as on Windows.
+    static let sidebarHTML: String = {
+        let html = text("ui", "html")
+        guard let url = Bundle.main.url(forResource: "JetBrainsMono-latin", withExtension: "woff2"),
+              let font = try? Data(contentsOf: url) else { return html }
+        let face = "@font-face{font-family:'JetBrains Mono';src:url(data:font/woff2;base64,\(font.base64EncodedString())) format('woff2');font-weight:100 800;font-display:block}"
+        return html.replacingOccurrences(of: "/*OXYGEN_FONT_FACE*/", with: face)
+    }()
+
+    static let contentJS = text("content", "js")
+    static let glanceJS = text("glance", "js")
+
+    /// Gives shared pages the same `window.ipc.postMessage` the Windows webview has.
+    static let bridgeJS = """
+        window.__OXYGEN_PLATFORM = 'ios';
+        window.ipc = { postMessage: (m) => window.webkit.messageHandlers.ipc.postMessage(m) };
+        """
+}
+
+/// Forwards script messages without the WKUserContentController retaining
+/// the real handler (which would leak it).
+final class ScriptMessageProxy: NSObject, WKScriptMessageHandler {
+    private let handler: (String) -> Void
+    init(_ handler: @escaping (String) -> Void) { self.handler = handler }
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+        if let body = message.body as? String { handler(body) }
     }
 }
 

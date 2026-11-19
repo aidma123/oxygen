@@ -6,7 +6,7 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "0.1.0"
+    MARKETING_VERSION: "0.2.0"
     CURRENT_PROJECT_VERSION: "1"
 targets:
   Oxygen:
@@ -14,6 +14,15 @@ targets:
     platform: iOS
     sources:
       - path: Oxygen
+      # The sidebar, page scripts and font are shared with the Windows app.
+      - path: ../desktop/src/ui.html
+        buildPhase: resources
+      - path: ../desktop/src/content.js
+        buildPhase: resources
+      - path: ../desktop/src/glance.js
+        buildPhase: resources
+      - path: ../desktop/assets/fonts/JetBrainsMono-latin.woff2
+        buildPhase: resources
     scheme: {}
     info:
       path: Oxygen/Info.plist
